@@ -1,0 +1,1028 @@
+---
+title: "BSIIfinal"
+author: "Jess Hoffman"
+date: '2022-07-05'
+output: html_document
+---
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(edgeR)
+library(reshape2)
+library(gridExtra)
+library(mdatools)
+library(WGCNA)
+library(RColorBrewer)
+library(gtools)
+library(ggbreak) 
+library(pheatmap)
+library(ggrepel)
+library(ggVennDiagram)
+library(ranger)
+library(caret)
+```
+
+# miRNA - Read in everything, batch correct, write file
+
+1. Read in Novogene - small RNA Ilumina App
+```{r}
+setwd("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/2. SeqFiles/sRNA")
+filelist = list.files(pattern = ".*.txt")
+datalist = lapply(filelist, function(x)read.table(x, header=T)) 
+datafr = do.call("cbind", datalist)
+rownames(datafr) = datafr[,1]
+datafr = datafr[2:2589,c(seq(2,42,2))]
+rn = rownames(datafr)
+colnames(datafr) = gsub("\\-.*","",filelist)
+head(datafr)
+
+novogene = datafr %>% mutate_if(is.integer, as.numeric)
+rownames(novogene) = rn
+novogene = data.frame(miR = rn, novogene) %>% dplyr::select(starts_with("E"))
+head(novogene)
+```
+2. Read in Yerkes - Qiagen geneglobe
+```{r}
+y = read.csv("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/2. SeqFiles/p20111-p20186_Hyun-Ji/BigSeqmiRNAYerkes_reads.csv",
+             stringsAsFactors=FALSE)
+rownames(y) = y[,1]
+rny = rownames(y)
+head(y)
+tail(y)
+dim(y)
+
+# convert strings to numbers
+y <- as.data.frame(lapply(y, function(y){as.numeric(gsub(",", "", y))}))
+rownames(y) = rny
+y = data.frame(miR = rny, y) %>% dplyr::select(starts_with("E"))
+head(y)
+```
+
+3. Read in Yerkes CHILD, E938, E1092- Qiagen geneglobe
+```{r}
+miR = read.csv("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/2. SeqFiles/10252021_CHILD/miRNA_10252021/reads_miRNA_10252021_CHILD_E938_E1092.csv") # Qiagen geneglobe
+rownames(miR) = miR$miRNA; miR = miR[,2:ncol(miR)]
+miR = miR %>% dplyr::filter(grepl("hsa-",rownames(miR))) %>% dplyr::select(starts_with("E"))
+rmiR = rownames(miR)
+# convert strings to numbers
+miR = as.data.frame(lapply(miR, function(miR){as.numeric(gsub(",", "", miR))}))
+rownames(miR) = rmiR
+head(miR)
+```
+
+4. Combine datasets
+```{r}
+full = full_join(novogene %>% rownames_to_column("miR"), y %>% rownames_to_column("miR"), by = "miR"); head(full)
+full2 = full_join(full, miR %>% rownames_to_column("miR"), by = "miR"); head(full2)
+dim(full2) #missing 1048, not sequenced
+rownames(full2) = full2$miR
+
+EV = full2 %>% dplyr::select(starts_with("E")) 
+EV  = full2 %>% dplyr::select(order(as.numeric(str_sub(colnames(full2),2,-1))))
+
+#write.csv(EV, "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/finalEVcounts/miRNA_counts_EV.csv")
+```
+
+
+# Total RNA - Read in everything, batch correct, write file
+1. Read in Yerkes totalseq - gene FPKM files from basespace alignment
+```{r}
+mainpath = "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/2. SeqFiles/totalRNA-usingcounts/"
+setwd(paste(mainpath,"Counts/Yerkes_redo", sep = ""))
+filelist = list.files(path = paste(mainpath,"Counts/Yerkes_redo", sep = ""), pattern = ".*.txt")
+datalist = lapply(filelist, function(x)read.table(x, header=F)) 
+datafr = do.call("cbind", datalist)
+df = data.frame(datafr[,1], datafr[,grepl( "V2", names(datafr))])
+colnames(df)[2:ncol(df)] = sub('-.*', '', filelist)
+rownames(df) = df[,1]
+df = df[,2:ncol(df)] %>% dplyr::select(starts_with("E")) 
+head(df)
+sort(as.numeric(substr(colnames(df),2,length(colnames(df)))))
+```
+
+2. Read in trial batch of Yerkes
+```{r}
+setwd(paste(mainpath,"Counts/Yerkes_trial", sep = ""))
+trial_filelist = list.files(pattern = ".*.txt")
+trial_datalist = lapply(trial_filelist, function(x)read.table(x, header=F)) 
+trial_datafr = do.call("cbind", trial_datalist)
+trial_df = data.frame(trial_datafr[,1], trial_datafr[,grepl( "V2", names(trial_datafr))])
+colnames(trial_df)[2:ncol(trial_df)] = sub('.counts.genes.txt', '', trial_filelist)
+rownames(trial_df) = trial_df[,1]
+trial_df = trial_df[,2:ncol(trial_df)] %>% dplyr::select(starts_with("E")) 
+head(trial_df)
+```
+
+3. Read in Yerkes CHILD totalseq - gene FPKM files from basespace alignment
+```{r}
+mainpath = "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/2. SeqFiles/10252021_CHILD/"
+setwd(paste0(mainpath,"TotalRNA_10252021/CHILDTotalRNAseq_10_2021-counts"))
+filelist_2 = list.files(path = paste0(mainpath,"TotalRNA_10252021/CHILDTotalRNAseq_10_2021-counts"), pattern = ".*.txt")
+datalist_2 = lapply(filelist_2, function(x)read.table(x, header=F)) 
+datafr_2 = do.call("cbind", datalist_2)
+df_2 = data.frame(datafr_2[,1], datafr_2[,grepl( "V2", names(datafr_2))])
+colnames(df_2)[2:ncol(df_2)] = sub('-.*', '', filelist_2)
+rownames(df_2) = df_2[,1]
+df_2 = df_2[,2:ncol(df_2)] %>% dplyr::select(starts_with("E")) 
+head(df_2)
+```
+
+
+4. Combine datasets
+```{r}
+y = df
+yt = trial_df
+y2 = df_2
+y = cbind(RNA = rownames(y), y); head(y)
+yt = cbind(RNA = rownames(yt), yt); head(yt)
+y2 = cbind(RNA = rownames(y2), y2); head(y2)
+
+full.2 = full_join(y,yt, by = "RNA")
+full.3 = full_join(full.2,y2, by = "RNA")
+
+rownames(full.3) = full.3[,1]; full.3 = full.3[,2:ncol(full.3)]
+head(full.3)
+dim(y); dim(yt); dim(y2); dim(full.3)
+EVRNA  = full.3 %>% dplyr::select(order(as.numeric(str_sub(colnames(full.3),2,-1)))) %>% head(n=nrow(full.3)-2) %>% 
+  rownames_to_column("RNA") %>% dplyr::filter(!grepl('MIR', RNA)) %>% column_to_rownames("RNA") #remove miRNAs
+# missing 1048
+
+#write.csv(EVRNA, "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/finalEVcounts/TotalRNA_counts_EV.csv")
+```
+
+
+# miRNA - Filter and norm
+1. Filter out miRNAs with >20 zero entries
+2. Batch correct: Novogene vs. Yerkes batches
+```{r}
+miR_EV = EV[,1:(ncol(EV)-1)]
+miR_EV_complete = miR_EV %>% dplyr::filter(complete.cases(.))
+miR_EV_filter = miR_EV_complete[apply(miR_EV_complete == 0, 1, sum) <= 20, ] #change number to # of zeros allowed
+
+paste0("total miRNAs measured: ",dim(miR_EV)[1],
+       ". miRNAs w/o NA's/complete cases: ", dim(miR_EV_complete)[1],
+       ". miRNAs after zero entry filter: ", dim(miR_EV_filter)[1])
+
+seqinfo = read.csv("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/SeqInfo.csv")
+
+# EV filter, then batch correct
+e_miR <- DGEList(counts=miR_EV_filter, group = seqinfo$miR_EV_Batch[!is.na(seqinfo$miR_EV_Batch)])
+keep <- filterByExpr(e_miR)
+paste0("Filter out: ", table(keep)[[1]], " CPC-EV miRNAs.")
+e_miR <- e_miR[keep, , keep.lib.sizes=FALSE] # After filtering, reset the library sizes
+e_miR <- calcNormFactors(e_miR)
+
+e_miR_logcpm = cpm(e_miR, log = T)
+e_miR_batchcorr <- removeBatchEffect(e_miR_logcpm, seqinfo$miR_EV_Batch[!is.na(seqinfo$miR_EV_Batch)])
+par(mfrow=c(1,2))
+boxplot(as.data.frame(e_miR_logcpm),main="Original", col=as.numeric(as.numeric(e_miR$samples$group)), ylim = c(-5,20))
+boxplot(as.data.frame(e_miR_batchcorr), main="Batch corrected", col = as.numeric(e_miR$samples$group),ylim = c(-5,20))
+
+#png("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/dataprocessing/EVmiRNA_batch.png", res = 300, width = 3000, height = 1800)
+par(mfrow=c(1,2))
+plotMDS(e_miR_logcpm, main="Original", col=as.numeric(e_miR$samples$group)) 
+plotMDS(e_miR_batchcorr, main="Batch corrected", col=as.numeric(e_miR$samples$group)) 
+dev.off()
+
+#write.csv(e_miR_batchcorr, "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/finalEVcounts/miRNA_batchcorrectedlogCPM_EV.csv")
+```
+
+
+# Total RNA - Filter and norm
+1. Filter out miRNAs with >20 zero entries
+2. Batch correct: Novogene vs. Yerkes batches
+```{r}
+RNA_EV_complete = EVRNA %>% dplyr::filter(complete.cases(.))
+RNA_EV_filter = RNA_EV_complete[apply(RNA_EV_complete == 0, 1, sum) <= 20, ] #change number to # of zeros allowed
+
+paste0("total RNAs measured: ",dim(EVRNA)[1],
+       ". miRNAs w/o NA's/complete cases: ", dim(RNA_EV_complete)[1],
+       ". miRNAs after zero entry filter: ", dim(RNA_EV_filter)[1])
+
+# EV filter, then batch correct
+grouptest = seqinfo$Total_EV_Batch[!is.na(seqinfo$Total_EV_Batch)]
+grouptest[c(2,13,27)] = "Yerkes"
+grouptest[c(9,23)] = "Yerkes_2"
+
+e_RNA <- DGEList(counts=RNA_EV_filter, group = grouptest)
+e_RNA$samples
+keep <- filterByExpr(e_RNA)
+paste0("Filter out: ", table(keep)[[1]], " CPC-EV RNA.")
+e_RNA <- e_RNA[keep, , keep.lib.sizes=FALSE] # After filtering, reset the library sizes
+e_RNA <- calcNormFactors(e_RNA)
+
+e_RNA_logcpm = cpm(e_RNA, log = T)
+e_RNA_batchcorr <- removeBatchEffect(e_RNA_logcpm, seqinfo$Total_EV_Batch[!is.na(seqinfo$Total_EV_Batch)])
+par(mfrow=c(1,2))
+boxplot(as.data.frame(e_RNA_logcpm),main="Original", col=as.numeric(as.numeric(e_RNA$samples$group))+1, ylim = c(-5,20))
+boxplot(as.data.frame(e_RNA_batchcorr), main="Batch corrected", col = as.numeric(e_RNA$samples$group)+1,ylim = c(-5,20))
+
+#png("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/dataprocessing/EVRNA_batch.png", res = 300, width = 3000, height = 1800)
+par(mfrow=c(1,2))
+plotMDS(e_RNA_logcpm, main="Original - Total RNA", col=as.numeric(e_RNA$samples$group)+1) #800x450
+plotMDS(e_RNA_batchcorr, main="Batch corrected - Total RNA", col=as.numeric(e_RNA$samples$group)+1) 
+dev.off()
+
+#write.csv(e_RNA_batchcorr, "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/finalEVcounts/totalRNA_batchcorrectedlogCPM_EV.csv")
+```
+
+
+# Unsupervised Analysis
+1. Box plots
+```{r}
+plotBox = function(df, title, med){
+  colnames(df) = str_sub(colnames(df),2,-1)
+  melty = melt(df)
+  colnames(melty)[1] = "Patient.."
+  seqinfo2 = seqinfo; seqinfo2$Patient.. = as.factor(seqinfo2$Patient..)
+  melty = left_join(melty,seqinfo2)
+  ggplot(data = melty, aes(x=reorder(Patient.., Age..months.), y=value)) + geom_boxplot(aes(color = Age.Group))+
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+    labs(y = "logCPM", x = "Patient #", title = title, color = "Age Group")+
+    geom_hline(yintercept=med, color = "black", size=0.75, linetype = "dotted")+
+    scale_color_manual(values=c(child="#5D3C91", infant="#45989B", neonate ="#EFB931"))+
+    theme(plot.title = element_text(hjust = 0.5, size = 16),
+                                panel.grid.major = element_blank(),
+                                panel.grid.minor = element_blank(),
+                                panel.background = element_rect(fill = "white", colour = "white", size = 0.5, linetype = "solid"),
+                                axis.text.x = element_text(color = "black", size = 12),
+                                axis.text.y = element_text(color = "black", size = 12),
+                                axis.title.x = element_text(color="black", size=14),
+                                axis.title.y = element_text(color="black", size=14),
+                                legend.text = element_text(color = "black", size = 12))}
+#png("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/dataprocessing/TMM/EVmiRRNA_boxplot.png", res = 300, width = 2350, height = 1500)
+plotBox(as.data.frame(e_miR_batchcorr), "miRNA", median(e_miR_batchcorr)) #700x450
+#dev.off()
+#png("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/dataprocessing/TMM/EVtotalRNA_boxplot.png", res = 300, width = 2350, height = 1500)
+plotBox(as.data.frame(e_RNA_batchcorr), "Total RNA", median(e_RNA_batchcorr))
+#dev.off()
+```
+
+2. PCA
+```{r}
+seqinfo$logmonths = log10(seqinfo$Age..months.); seqinfo$logmonths[!is.finite(seqinfo$logmonths)] = 0 # calculate log10(age in months)
+seqinfo$Set = c(rep("Training",28), rep("Testing/CHILD Trial",3),rep("Training",2), rep("Testing/CHILD Trial",2),rep("Training",2))
+
+plotPCA2groups = function(df, color, shape, title){
+  PCA = prcomp(t(df), scale = FALSE)
+  percentVar <- round(100*PCA$sdev^2/sum(PCA$sdev^2),1)
+  sd_ratio <- sqrt(percentVar[2] / percentVar[1])
+  dataGG <- data.frame(PC1 = PCA$x[,1], 
+                     PC2 = PCA$x[,2],
+                     Sample = colnames(df),
+                     Age = color,
+                     Set = shape)
+  ggplot(dataGG, aes(PC1, PC2)) +
+  geom_point(aes(colour = Age, shape = Set), size = 4) +
+  labs(colour=expression(paste("Age (",log[10], "months)", sep="")), shape="Set")+
+  ggtitle(title) +
+  scale_colour_gradient(low = "thistle", high = "#5D3C91")+
+  #scale_color_manual(values=c(child="#5D3C91", infant="#45989B", neonate ="#EFB931"))+
+  xlab(paste0("PC1, VarExp: ", percentVar[1], "%")) +
+  ylab(paste0("PC2, VarExp: ", percentVar[2], "%")) +
+  theme(plot.title = element_text(hjust = 0.5),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = "white", colour = "white", size = 0.5, linetype = "solid"),
+        axis.text.x = element_text(color = "black", size = 12),
+        axis.text.y = element_text(color = "black", size = 12),
+        axis.title.x = element_text(color="black", size=14),
+        axis.title.y = element_text(color="black", size=14),
+        legend.key = element_blank()) +
+  coord_fixed(ratio = sd_ratio) +
+  xlim(round(min(dataGG$PC1),0)-1, round(max(dataGG$PC1),0)+1) +
+  ylim(round(min(dataGG$PC2),0)-1, round(max(dataGG$PC2),0)+1) +
+  theme(aspect.ratio=1) +
+  geom_hline(yintercept=0, color = "gray45", size=0.5) +
+  geom_vline(xintercept=0, color = "gray45", size=0.5)
+}
+
+#png(filename = "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/remove1104_1105/TMM/PCAplot.png", width = 3000, height = 1500, res = 300)
+grid.arrange(
+  plotPCA2groups(as.data.frame(e_miR_batchcorr), seqinfo$logmonths[c(1:18,20:nrow(seqinfo))], 
+                 seqinfo$Set[c(1:18,20:nrow(seqinfo))],"EV miRNA - PCA"),
+  plotPCA2groups(as.data.frame(e_RNA_batchcorr), seqinfo$logmonths[c(1:18,20:nrow(seqinfo))], 
+                 seqinfo$Set[c(1:18,20:nrow(seqinfo))], "EV total RNA - PCA"), nrow =1)
+#dev.off()
+```
+
+
+# WGCNA
+1. Prep data
+```{r}
+miR_EV_WGCNA = t(as.data.frame(e_miR_batchcorr)) # transpose so features/RNAs are rows, samples are columns
+total_EV_WGCNA = t(as.data.frame(e_RNA_batchcorr)) # transpose so features/RNAs are rows, samples are columns
+combo_WGCNA = cbind(total_EV_WGCNA,miR_EV_WGCNA)
+combo_WGCNA_scaled = prep.autoscale(combo_WGCNA, scale = TRUE, center = TRUE)
+
+png(filename = "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/WGCNA/TMM/WGCNAprep.png", width = 3000, height = 3000, res = 300)
+par(mfrow = c(2,2))
+boxplot(combo_WGCNA[,1:20], las = 2, main = "Original Features")
+boxplot(combo_WGCNA_scaled[,1:20], las = 2, main = "Scaled and Centered Features")
+boxplot(t(combo_WGCNA), las = 2, main = "Original Samples")
+boxplot(t(combo_WGCNA_scaled), las = 2, main = "Features Scaled and Centered  - Samples")
+dev.off()
+```
+
+1.5 Read in Outcomes
+```{r}
+library(xlsx)
+o = as.data.frame(read.xlsx(file = "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/in vitro outcomes summary.xlsx", 
+              sheetName="summary", row.names=TRUE)[3:39,5:15])
+for (i in 1:ncol(o)) {o[,i] = as.numeric(as.character(o[,i]))}
+o = o[c(1:18,20:37),] # remove 1048
+o
+oscaled = as.data.frame(scale(o))
+png(filename = "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/WGCNA/TMM/outcomesscaled_WGCNA.png", width = 2400, height = 1200, res = 300)
+par(mfrow = c(1,2))
+boxplot(o, las=2, main = "Original Outcomes")
+boxplot(oscaled,las=2, main = "Scaled Outcomes")
+dev.off()
+```
+
+
+2. Sample Dendrogram
+```{r}
+sampleTree = hclust(dist(combo_WGCNA), method = "average") #cluster samples, samples scaled not features
+rows = c(1:18,20:nrow(seqinfo)) # remove 1048 - no seq data
+age = seqinfo$Age.Group[rows]
+age = log(seqinfo$Age..months.[rows])
+age[!is.finite(age)] <- 0
+#colors
+fibcolor = colorRampPalette(c("#FAB666", "darkorange3"))(20)
+infcolor = colorRampPalette(c("coral1", "firebrick4"))(20)
+migcolor = colorRampPalette(c("darkseagreen2", "seagreen4"))(20)
+angcolor = colorRampPalette(c("cadetblue3", "deepskyblue4"))(20)
+#set color annotations
+annotWGCNAcolor = data.frame(Age = numbers2colors(age, colors = colorRampPalette(c("white", "#5D3C91"))(20)),
+                             Migration = numbers2colors(o$Migration, colors =  migcolor),
+                             TotalTube = numbers2colors(o$Total.Tubes, colors = angcolor),
+                             TubeLength = numbers2colors(o$Tube.Length, colors = angcolor),
+                             Il6 = numbers2colors(o$IL.6, colors = infcolor),
+                             Il1a = numbers2colors(o$IL.1a, colors = infcolor),
+                             Ctgf = numbers2colors(o$CTGF, colors = fibcolor),
+                             Col1a2 = numbers2colors(o$Col1A2, colors = fibcolor)) 
+rownames(annotWGCNAcolor)=rownames(combo_WGCNA)
+png(filename = "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/WGCNA/TMM/sampledendrogram.png", width = 2000, height = 1200, res = 300)
+plotDendroAndColors(sampleTree, 
+                    annotWGCNAcolor,
+                    groupLabels = names(annotWGCNAcolor), 
+                    main = "Total RNA and miRNA")
+dev.off()
+```
+
+3. Build Network - Select threshold
+```{r}
+powers = c(c(1:10), seq(from = 12, to=20, by=2)) # Choose a set of soft-thresholding powers
+sft = pickSoftThreshold(combo_WGCNA_scaled, powerVector = powers, verbose = 5) # Call the network topology analysis function
+
+sizeGrWindow(9, 5) # Plot the results:
+par(mfrow = c(1,2))
+cex1 = 0.9;
+# Scale-free topology fit index as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2], xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n", main = paste("Scale independence"));
+text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+labels=powers,cex=cex1,col="red");
+abline(h=c(0.8,0.9),col="red") # this line corresponds to using an R^2 cut-off of h
+# Mean connectivity as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], sft$fitIndices[,5], xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n", 
+     main = paste("Mean connectivity"))
+text(sft$fitIndices[,1], sft$fitIndices[,5], labels=powers, cex=cex1,col="red")
+```
+
+4. get module eigengenes - power = 8
+```{r}
+adjacency = adjacency(combo_WGCNA_scaled, power = 8)
+TOM = TOMsimilarity(adjacency) # Turn adjacency into topological overlap
+dissTOM = 1-TOM
+geneTree = hclust(as.dist(dissTOM), method = "average") # hierarchical clustering function
+minModuleSize = 25 
+# Module identification using dynamic tree cut:
+dynamicMods = cutreeDynamic(dendro = geneTree, distM = dissTOM, cutHeight = 0.99,
+                            deepSplit = 2, pamRespectsDendro = FALSE,
+                            minClusterSize = minModuleSize)
+table(dynamicMods) #--> 34 modules
+
+# Convert numeric lables into colors
+dynamicColors = labels2colors(dynamicMods) #colorSeq = colorRampPalette(brewer.pal(n = 12, name = "Set3"))(nrow(table(dynamicMods))))
+
+plotDendroAndColors(geneTree, cbind(dynamicColors),
+                    c("Dynamic Tree Cut"),
+                    dendroLabels = FALSE, hang = 0.03, addGuide = FALSE)
+
+MEList = moduleEigengenes(combo_WGCNA_scaled, colors = dynamicColors) # Calculate eigengenes
+MEs = MEList$eigengenes
+MEDiss = 1-cor(MEs) # Calculate dissimilarity of module eigengenes
+METree = hclust(as.dist(MEDiss), method = "average")   # Cluster module eigengenes
+sizeGrWindow(7, 6)
+plot(METree, main = "Clustering of module eigengenes",xlab = "", sub = "")
+```
+
+5. Merge similar modules
+```{r}
+MEDissThres = 0.1
+plot(METree, main = "Clustering of module eigengenes",xlab = "", sub = "")
+abline(h=MEDissThres, col = "red")   # Plot the cut line into the dendrogram
+
+merge = mergeCloseModules(combo_WGCNA_scaled, dynamicColors, cutHeight = MEDissThres, verbose = 3)   # Call an automatic merging function
+mergedColors = merge$colors   # The merged module colors
+# Eigengenes of the new merged modules:
+mergedMEs = merge$newMEs;
+sizeGrWindow(12, 9)
+plotDendroAndColors(geneTree, cbind(dynamicColors, mergedColors),
+                    c("Dynamic Tree Cut", "Merged dynamic"),
+                    dendroLabels = FALSE, hang = 0.03, addGuide = FALSE)
+moduleColors = mergedColors # Rename to moduleColors
+# Construct numerical labels corresponding to the colors
+#colorOrder = colorRampPalette(brewer.pal(n = 12, name = "Set3"))(nrow(table(dynamicMods)))
+#moduleLabels = match(moduleColors, colorOrder)
+MEs = mergedMEs
+table(merge$colors)
+length(table(merge$colors))
+```
+6. Plot correlation of modules to outcomes
+```{r}
+nGenes = ncol(combo_WGCNA_scaled);# Define numbers of genes and samples
+nSamples = nrow(combo_WGCNA_scaled);
+moduleTraitCor = cor(MEs, oscaled, use = 'pairwise.complete.obs', method = "spearman")
+moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nSamples);
+sizeGrWindow(10,6)# Will display correlations and their p-values
+textMatrix = paste(signif(moduleTraitCor, 2), "\n(",signif(moduleTraitPvalue, 1), ")", sep = "");
+dim(textMatrix) = dim(moduleTraitCor)
+# Display the correlation values within a heatmap plot
+png(filename = "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/WGCNA/TMM/moduleoutcomeheatmap_scaledtotalandmiRNA.png", 
+    width = 1200, height = 2400, res = 300)
+labeledHeatmap(Matrix = moduleTraitCor,
+               xLabels = names(oscaled),
+               yLabels = names(MEs),
+               ySymbols = paste("M",1:ncol(MEs),sep=""),
+               colorLabels = TRUE,
+               colors = colorRampPalette(rev(brewer.pal(n = 11, name = "RdYlBu")))(25),
+               textMatrix = stars.pval(moduleTraitPvalue),
+               setStdMargins = FALSE,
+               cex.text = 1.2,
+               textAdj=c(0.5,0.5),
+               zlim = c(-1,1),
+               #horizontalSeparator.y = seq(1,25,1),
+               #horizontalSeparator.lwd=0.7,
+               #verticalSeparator.x = seq(1,7,1),
+               #verticalSeparator.lwd=0.7,
+               xLabelsAngle=90,
+               main = paste("Module-Outcome relationships"))
+dev.off()
+```
+
+7. Plot module dendrogram and correlation to outcomes
+```{r}
+MEDiss = 1-cor(MEs)
+rownames(MEDiss) = paste("M",1:ncol(MEDiss),sep="")
+colnames(MEDiss) = paste("M",1:ncol(MEDiss),sep="")
+METree = hclust(as.dist(MEDiss), method = "average");
+#sizeGrWindow(7, 6)
+moduleTraitCor = cor(MEs, oscaled, use = 'pairwise.complete.obs', method = "spearman")
+
+png(filename = "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/WGCNA/TMM/moduleoutcomedendro_scaledtotalandmiRNA.png", 
+    width = 2400, height = 1200, res = 300)
+plotDendroAndColors(METree, 
+                    numbers2colors(moduleTraitCor, 
+                                   colors = colorRampPalette(rev(brewer.pal(n = 11, name = "RdYlBu")))(25),lim=c(-1,1)),
+                    groupLabels = names(o), 
+                    main = "RNA: Module Clustering and Outcomes") #700x400
+dev.off()
+```
+
+8. Grab module members
+```{r eval=FALSE, include=FALSE}
+RNAs = colnames(combo_WGCNA_scaled)
+getRNAlist = function(mod){return(RNAs[merge$colors == str_sub(names(MEs)[mod],3,-1)])}
+db = read.csv("~/Desktop/hsa_miRTarbase.csv")
+
+for (i in 1:33) {l = getRNAlist(i)
+  write.xlsx(l,
+             file = "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/WGCNA/importmodules_totalandmir_Scaled.xlsx", 
+              sheetName = paste0("mod",i), append = TRUE)
+  target = data.frame()
+  for (j in 1:length(l)) {miR = l[j]
+                          newtarget = db[(db$miRNA == as.character(miR) & db$num.exps>=1),1:3]
+                          target = rbind(target, newtarget)}
+  write.xlsx(target,
+             file = "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/WGCNA/importmodules_totalandmir_Scaled.xlsx", 
+           sheetName = paste0("mod",i,"target"), append = TRUE)}
+
+#module 5
+#RNAs[merge$colors == str_sub(names(MEs)[34],3,-1)]
+```
+
+9. Plot distribution of miRNAs and total RNAs in modules
+```{r eval=FALSE, include=FALSE}
+getRNAlist = function(mod){return(RNAs[merge$colors == str_sub(names(MEs)[mod],3,-1)])}
+counts = data.frame(module=c(),miR=c(),totalRNA=c())
+for (i in 1:34){l = getRNAlist(i)
+miRcount = sum(grepl("hsa-",l))
+RNAcount = sum(!grepl("hsa-",l))
+counts = rbind(counts,data.frame(paste0("M",i),miRcount,RNAcount))}
+colnames(counts) = c("Module", "miRNA", "RNA")
+counts$num = 1:34
+
+png("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/WGCNA/TMM/Modulebreakdown.png",res=300, width=1500,height=1500)
+counts %>% pivot_longer(cols = miRNA:RNA) %>% ggplot(aes(fill = name, y = reorder(Module,-num), x = value))+
+  geom_bar(position="stack",stat = "identity") + ylab("Module") + xlab("Count") + theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), legend.title=element_blank())+
+  scale_x_break(c(1000,3600))
+dev.off()
+```
+
+
+9. Annotate
+```{r}
+library(EnsDb.Hsapiens.v79)
+#ensembldb::select(EnsDb.Hsapiens.v79, keys= RNAs, keytype = "SYMBOL", columns = c("SYMBOL","GENEID", "TXBIOTYPE"))
+```
+
+#PLSR
+1. Data prep
+```{r}
+o2=o; names(o2)[4:5] = c("Vim.y","Ctgf.y")
+combo = rbind(as.data.frame(e_miR_batchcorr),as.data.frame(e_RNA_batchcorr))
+names(combo) = str_sub(names(combo), 2,-1)
+combo = as.data.frame(t(combo)); combo$ID = rownames(combo)
+dfcombo = left_join(o2 %>% rownames_to_column("ID"),combo,by = "ID") %>% column_to_rownames("ID")
+data = df[3:nrow(df),5:ncol(df)]; dim(data)
+pat_info = as.data.frame(read.xlsx(file = "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/in vitro outcomes summary.xlsx", sheetName="summary", row.names=TRUE))[3:39,1:4]
+
+#Train model - 26 training set, 7 testing set
+Train = dfcombo[c(1:19,21:25,27,36),] #20 = 1063, 26 = 1099, 35 = 2013
+TrainY = Train[,1:11]
+TrainX = Train[,12:ncol(Train)]
+
+Test = dfcombo[28:34,12:ncol(dfcombo)]
+TestY = dfcombo[28:34,1:11]
+
+#Outcomes
+par(mfrow=(c(2,2)))
+boxplot(prep.autoscale(TrainY, center = FALSE, scale = FALSE),las = 2)
+boxplot(prep.autoscale(TrainY, center = TRUE, scale = TRUE), las = 2) #700x500
+boxplot(prep.autoscale(TestY, center = FALSE, scale = FALSE),las = 2)
+boxplot(prep.autoscale(TestY, center = TRUE, scale = TRUE), las = 2) #700x500
+dev.off()
+
+
+annotc = data.frame(Assay = c(rep("Fibrotic Gene", 5), rep("Inflammatory Gene", 3), rep("Tube Formation", 2), "Migration"))
+rownames(annotc) = colnames(o2)
+annotation_colors = list(Age = c(child="#5D3C91", infant="#45989B", neonate ="#EFB931"),
+                         Set = c(Training="cornflowerblue", Testing="limegreen"),
+                         #Sex = c(Female = "deeppink", Male = "forestgreen", "NA" = "grey"),
+                         Assay = c("Fibrotic Gene" = "#E39649", "Inflammatory Gene" = "#D74D3E", "Tube Formation" = "#28528E", Migration = "#5A8F58"))
+b = prep.autoscale(o2 %>% dplyr::filter(complete.cases(.)), center = TRUE, scale = TRUE)
+boxplot(b)
+
+png("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/outcomehm.png", width = 2000, height = 1500, res = 300)
+pheatmap(as.matrix(dist(t(b),method = "euclidean")),
+         color = colorRampPalette(rev(brewer.pal(9, "Blues")))(16),
+         annotation_col = annotc,
+         annotation_row = annotc,
+         annotation_colors = annotation_colors,
+         clustering_distance_rows = "correlation",
+         clustering_distance_cols = "correlation",
+         show_rownames = T,
+         show_colnames = T)
+dev.off()
+```
+
+2. Regression function
+```{r}
+makereg = function(x,y){
+  mod = pls(x = prep.autoscale(x, scale = TRUE, center = TRUE), 
+            y = prep.autoscale(y, scale = TRUE, center = TRUE), 10, cv = 1)
+  plot(mod)
+  summary(mod)
+  plotYCumVariance(mod, type = "h", show.labels = TRUE) #500x500
+  return(mod)}
+
+plottraining = function(mod,ncomp,row,column){
+  par(mfrow = c(row,column))
+  for (i in 1:nrow(mod$yloadings)) {plotRMSE(mod, ny = i)}# each is #450x450
+  dev.off()
+  par(mfrow = c(row,column))
+  for (i in 1:nrow(mod$yloadings)) {plotPredictions(mod, ny = i)}
+  dev.off()
+  plotYCumVariance(mod, type = "h", show.labels = TRUE)
+  plotXCumVariance(mod, type = "h", show.labels = TRUE)
+  plotXResiduals(mod, show.labels=TRUE, ncomp=ncomp)
+  summary(mod, ncomp = ncomp)}
+
+getVIP = function(mod,x,y,ncomp,threshold, row,column){
+  vip = vipscores(mod, ncomp = ncomp)
+  m3 = pls(x = prep.autoscale(x, scale = TRUE, center = TRUE), 
+           y = prep.autoscale(y, scale = TRUE, center = TRUE), 10, cv = 1, exclcols = (rowMeans(vip) < threshold))
+  paste0("# VIPs: ",table(rowMeans(vipscores(mod, ncomp=3))<1.5)[1], " - threshold = ", threshold)
+  summary(m3)
+  plot(m3)
+  par(mfrow = c(row,column))
+  for (i in 1:nrow(mod$yloadings)) {plotRMSE(m3, ny = i)}
+  dev.off()
+  plotYCumVariance(m3, type = "h", show.labels = TRUE)
+  plotXCumVariance(m3, type = "h", show.labels = TRUE)
+  plotXResiduals(m3, show.labels=TRUE, ncomp=ncomp)
+  par(mfrow = c(row,column))
+  for (i in 1:nrow(mod$yloadings)) {plotPredictions(m3, ny = i, ncomp = ncomp)}
+  dev.off()
+  summary(m3, ncomp = ncomp)
+  plotVIPScores(m3, ncomp = ncomp, type = "b", show.labels = TRUE)
+  plotRegcoeffs(m3, ncomp = ncomp, type = "h", show.ci = TRUE, show.labels = TRUE)
+  return(m3)}
+
+getpredictions = function(modtuned,testx,testy,ncomp, row, column, num, color){
+  r = predict(modtuned, prep.autoscale(testx, scale = TRUE, center = TRUE), prep.autoscale(testy, scale = TRUE, center = TRUE))
+  plot(r)
+  par(mfrow = c(row,column))
+  for (i in 1:num) {plotPredictions(r, ny = i, ncomp=ncomp, show.stat = TRUE, col = color, show.lines = c(0,0))}}
+
+######### Plotting functions ######### 
+plotRMSEPred = function(num, model, ncomp, folder){
+  png(paste0("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/",folder), width = 1500, height = 750*num, res = 300)
+  par(mfrow = c(num,2))
+  for (i in 1: num) {
+    plotRMSE(model, ny = i)
+    plotPredictions(model, ny = i, ncomp = ncomp)
+  }
+}
+
+plotScoresVar = function(model, color, folder){
+  png(paste0("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/",folder), width = 2000, height = 2200, res = 300)
+  par(mfrow = c(2,2))
+  plotXCumVariance(model, type = "h", col = color, show.labels = TRUE, lab.cex = 0.6)
+  plotYCumVariance(model, type = "h", col =color, show.labels = TRUE, lab.cex = 0.6)
+  plotXScores(model,show.label = TRUE)
+  plotXYLoadings(model)
+}
+
+plotscorescolorcoded = function(model, title){
+  scores = as.data.frame(model$res$cal$xdecomp$scores)[,1:2] %>% rownames_to_column("Patient") %>% 
+    full_join(pat_info %>% rownames_to_column("Patient"))
+  colnames(scores)[2:3] = c("Component1","Component2")
+  expvar = c(model$res$cal$xdecomp$expvar[[1]], model$res$cal$xdecomp$expvar[[2]])
+  ggplot(scores, aes(x = Component1, y = Component2, label = Patient)) + geom_point(size = 3, aes(color = Group)) + 
+    scale_color_manual(values=c(child="#5D3C91", infant="#45989B", neonate ="#EFB931")) +
+    theme(plot.title = element_text(hjust = 0.5), 
+          panel.background = element_rect(fill = "white", colour = "white", size = 0.5, linetype = "solid"),
+          axis.text.x = element_text(color = "black", size = 12), axis.text.y = element_text(color = "black", size = 12),
+          axis.title.x = element_text(color="black", size=14), 
+          axis.title.y = element_text(color="black", size=14), legend.key = element_blank())+
+    geom_hline(yintercept=0, color = "gray45", size=0.25) + geom_text_repel(size = 3)+
+    geom_vline(xintercept=0, color = "gray45", size=0.25) + ggtitle(title) +
+    xlab(paste0("Component 1 (",round(expvar[1],2),"%)")) + ylab(paste0("Component 2 (",round(expvar[2],2),"%)"))
+}
+
+plotloadingscolorcoded = function(model, title){
+  yloadings = as.data.frame(model$yloadings)[,1:2] %>% rownames_to_column("Label"); yloadings$Type = "Outcome"
+  xloadings = as.data.frame(model$xloadings)
+  xloadings = xloadings[rowSums(xloadings[])>0,1:2] %>% rownames_to_column("Label"); xloadings$Type = "RNA"
+  p = rbind(yloadings,xloadings); colnames(p)[2:3] = c("Component1","Component2");
+  print(p)
+  expvar = c(model$res$cal$xdecomp$expvar[[1]], model$res$cal$xdecomp$expvar[[2]])
+  ggplot(p, aes(x = Component1, y = Component2, label = Label)) + geom_point(size = 2, aes(color = Type)) + 
+    #scale_color_manual(values=c(child="#5D3C91", infant="#45989B", neonate ="#EFB931")) +
+    theme(plot.title = element_text(hjust = 0.5), panel.background = element_rect(fill = "white", colour = "white", size = 0.5, linetype = "solid"),
+          axis.text.x = element_text(color = "black", size = 12), axis.text.y = element_text(color = "black", size = 12),
+          axis.title.x = element_text(color="black", size=14), axis.title.y = element_text(color="black", size=14), legend.key = element_blank())+
+    geom_hline(yintercept=0, color = "gray45", size=0.25) + geom_text_repel(size = 3)+ #|str_sub(p$Label,1,3)=="hsa"
+    geom_vline(xintercept=0, color = "gray45", size=0.25) + ggtitle(title) +
+    xlab(paste0("Component 1 (",round(expvar[1],2),"%)")) + ylab(paste0("Component 2 (",round(expvar[2],2),"%)"))
+}
+```
+
+3. Fibrosis - full model
+```{r}
+#modfib = makereg(TrainX,TrainY[,1:5])
+#save(modfib, file = "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/modfib_full.RDS")
+
+load("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/modfib_full.RDS")
+
+png("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/Fibrosis/FibrosisFullXScores.png", width = 1700, height = 1500, res = 300)
+plotscorescolorcoded(modfib, title = "Fibrosis Full Model, X Scores"); dev.off()
+plotRMSEPred(num = 5, modfib, ncomp = 3, "final R code/plots/PLSR/Fibrosis/RMSEpred_Fibrosisfullmodel.png"); dev.off()
+plotScoresVar(modfib,"#E39649", "final R code/plots/PLSR/Fibrosis/explXYvarScoresFibrosisfullmodel.png"); dev.off()
+
+png("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/Fibrosis/CHILDpredictions_full.png", width = 2000, height = 1600, res = 300)
+getpredictions(modfib, Test, TestY[,1:5], ncomp = 3, row = 2, column = 3, num=5, color = "#E39649"); dev.off()
+```
+
+4. Fibrosis - reduced model
+```{r}
+modfibvip = getVIP(modfib,TrainX,TrainY[,1:5], ncomp = 3, threshold = 2, row = 2, column = 3)
+  #as.data.frame(vipscores(modfibtotal, ncomp = 2))
+paste0("# of VIPs in fibrosis model:",table(rowMeans(as.data.frame(vipscores(modfib, ncomp = 3)))>2)[[2]])
+
+png("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/Fibrosis/VIP_CHILDpredictions.png", width = 2000, height = 1600, res = 300)
+getpredictions(modfibvip, Test, TestY[,1:5], ncomp = 3, row = 2, column = 3, num=5, color = "#E39649"); dev.off()
+
+png("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/Fibrosis/VIP_XScores.png", width = 1700, height = 1500, res = 300)
+plotscorescolorcoded(modfibvip, title = "Fibrosis Reduced Model, Scores"); dev.off()
+
+png("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/Fibrosis/VIP_XYLoadings.png", width = 1700, height = 1500, res = 300)
+plotloadingscolorcoded(modfibvip, "Fibrosis Reduced Model, XY Loadings"); dev.off()
+
+plotRMSEPred(num = 5, modfibvip, ncomp = 3, "final R code/plots/PLSR/Fibrosis/VIP_RMSEpred_FibrosisVIPmodel.png"); dev.off()
+plotScoresVar(modfibvip,"#E39649", "final R code/plots/PLSR/Fibrosis/VIP_explXYvarScoresFibrosisVIPmodel.png"); dev.off()
+
+
+library(xlsx)
+write.xlsx(as.data.frame(vipscores(modfib, ncomp = 3)), "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/VIPscores.xlsx", sheetName = "FibrosisVIPs-3comp",append = TRUE)
+```
+
+5. Inflammation - full model
+```{r}
+#modinf = makereg(TrainX,TrainY[,6:8])
+#save(modinf, file = "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/modinf_full.RDS")
+load("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/modinf_full.RDS")
+
+png("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/Inf/InfFullXScores.png", width = 1700, height = 1500, res = 300)
+plotscorescolorcoded(modinf, title = "Inflammation Full Model, X Scores"); dev.off()
+plotRMSEPred(num = 3, modinf, ncomp = 3, "final R code/plots/PLSR/Inf/RMSEpred_Inffullmodel.png"); dev.off()
+plotScoresVar(modinf,"#D74D3E", "final R code/plots/PLSR/Inf/explXYvarScoresInffullmodel.png"); dev.off()
+
+png("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/Inf/CHILDpredictions_full.png", width = 2000, height = 1600, res = 300)
+getpredictions(modinf, Test, TestY[,6:8], ncomp = 3, row = 2, column = 3, num=3, color = "#D74D3E"); dev.off()
+```
+
+6. Inflammation - reduced
+```{r}
+modinfvip = getVIP(modinf,TrainX,TrainY[,6:8], ncomp = 3, threshold = 2, row = 2, column = 3)
+paste0("# of VIPs in fibrosis model:",table(rowMeans(as.data.frame(vipscores(modinf, ncomp = 3)))>2)[[2]])
+
+png("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/Inf/VIP_CHILDpredictions.png", width = 2000, height = 1600, res = 300)
+getpredictions(modinfvip, Test, TestY[,6:8], ncomp = 3, row = 2, column = 3, num=3, color = "#D74D3E"); dev.off()
+
+png("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/Inf/VIP_XScores.png", width = 1700, height = 1500, res = 300)
+plotscorescolorcoded(modinfvip, title = "Inflammation Reduced Model, Scores"); dev.off()
+
+png("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/Inf/VIP_XYLoadings.png", width = 1700, height = 1500, res = 300)
+plotloadingscolorcoded(modinfvip, "Inflammation Reduced Model, XY Loadings"); dev.off()
+
+plotRMSEPred(num = 3, modinfvip, ncomp = 3, "final R code/plots/PLSR/Inf/VIP_RMSEpred_InfVIPmodel.png"); dev.off()
+plotScoresVar(modinfvip,"#D74D3E", "final R code/plots/PLSR/Inf/VIP_explXYvarScoresInfVIPmodel.png"); dev.off()
+
+write.xlsx(as.data.frame(vipscores(modinf, ncomp = 3)), "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/VIPscores.xlsx", sheetName = "InfVIPs-3comp",append = TRUE)
+```
+
+7. Angiogenesis - Full
+```{r}
+#modang = makereg(TrainX,TrainY[,9:10])
+#save(modang, file = "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/modang_full.RDS")
+load("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/modang_full.RDS")
+
+png("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/Ang/AngFullXScores.png", width = 1700, height = 1500, res = 300)
+plotscorescolorcoded(modang, title = "Angiogenesis Full Model, X Scores"); dev.off()
+plotRMSEPred(num = 2, modang, ncomp = 3, "final R code/plots/PLSR/Ang/RMSEpred_Angfullmodel.png"); dev.off()
+plotScoresVar(modang,"#28528E", "final R code/plots/PLSR/Ang/explXYvarScoresAngfullmodel.png"); dev.off()
+
+png("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/Ang/CHILDpredictions_full.png", width = 2000, height = 1600, res = 300)
+getpredictions(modang, Test, TestY[,9:10], ncomp = 3, row = 2, column = 3, num=2, color = "#28528E"); dev.off()
+```
+
+8. Angiogenesis - Reduced
+```{r}
+modangvip = getVIP(modang,TrainX,TrainY[,9:10], ncomp = 3, threshold = 2, row = 2, column = 3)
+paste0("# of VIPs in Angiogenesis model:",table(rowMeans(as.data.frame(vipscores(modang, ncomp = 3)))>2)[[2]])
+
+png("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/Ang/VIP_CHILDpredictions.png", width = 2000, height = 1600, res = 300)
+getpredictions(modangvip, Test, TestY[,9:10], ncomp = 3, row = 2, column = 3, num=2, color = "#28528E"); dev.off()
+
+png("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/Ang/VIP_XScores.png", width = 1700, height = 1500, res = 300)
+plotscorescolorcoded(modangvip, title = "Angiogenesis Reduced Model, Scores"); dev.off()
+
+png("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/Ang/VIP_XYLoadings.png", width = 1700, height = 1500, res = 300)
+plotloadingscolorcoded(modangvip, "Angiogenesis Reduced Model, XY Loadings"); dev.off()
+
+plotRMSEPred(num = 2, modangvip, ncomp = 3, "final R code/plots/PLSR/Ang/VIP_RMSEpred_angVIPmodel.png"); dev.off()
+plotScoresVar(modangvip,"#28528E", "final R code/plots/PLSR/Ang/VIP_explXYvarScoresangVIPmodel.png"); dev.off()
+
+write.xlsx(as.data.frame(vipscores(modang, ncomp = 3)), "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/VIPscores.xlsx", sheetName = "angVIPs-3comp",append = TRUE)
+```
+
+9. Migration - Full
+```{r}
+#modmig = makereg(TrainX,data.frame(Migration = TrainY[,11]))
+#save(modmig, file = "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/modmig_full.RDS")
+load("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/modmig_full.RDS")
+
+png("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/Mig/MigFullXScores.png", width = 1700, height = 1500, res = 300)
+plotscorescolorcoded(modmig, title = "Migration Full Model, X Scores"); dev.off()
+plotRMSEPred(num = 1, modmig, ncomp = 3, "final R code/plots/PLSR/Mig/RMSEpred_Migfullmodel.png"); dev.off()
+plotScoresVar(modmig,"#5A8F58", "final R code/plots/PLSR/Mig/explXYvarScoresMigfullmodel.png"); dev.off()
+
+png("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/Mig/CHILDpredictions_full.png", width = 2000, height = 1600, res = 300)
+getpredictions(modmig, Test, data.frame(Migration = TestY[,11]), ncomp = 3, row = 2, column = 3, num=1, color = "#5A8F58"); dev.off()
+```
+
+10. Migration - Reduced
+```{r}
+modmigvip = getVIP(modmig,TrainX,data.frame(Migration = TrainY[,11]), ncomp = 3, threshold = 2, row = 2, column = 3)
+paste0("# of VIPs in Migration model:",table(rowMeans(as.data.frame(vipscores(modmig, ncomp = 3)))>2)[[2]])
+
+png("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/Mig/VIP_CHILDpredictions.png", width = 2000, height = 1600, res = 300)
+getpredictions(modmigvip, Test, data.frame(Migration = TestY[,11]), ncomp = 3, row = 2, column = 3, num=1, color = "#5A8F58"); dev.off()
+
+png("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/Mig/VIP_XScores.png", width = 1700, height = 1500, res = 300)
+plotscorescolorcoded(modmigvip, title = "Migration Reduced Model, Scores"); dev.off()
+
+png("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/Mig/VIP_XYLoadings.png", width = 1700, height = 1500, res = 300)
+plotloadingscolorcoded(modmigvip, "Migration Reduced Model, XY Loadings"); dev.off()
+
+plotRMSEPred(num = 1, modmigvip, ncomp = 2, "final R code/plots/PLSR/Mig/VIP_RMSEpred_migVIPmodel.png"); dev.off()
+plotScoresVar(modmigvip,"#5A8F58", "final R code/plots/PLSR/Mig/VIP_explXYvarScoresmigVIPmodel.png"); dev.off()
+
+write.xlsx(as.data.frame(vipscores(modmig, ncomp = 2)), "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/VIPscores.xlsx", sheetName = "migVIPs-2comp",append = TRUE)
+```
+
+11. Check out the VIPs
+```{r}
+fibrosisvips = as.data.frame(vipscores(modfib, ncomp = 3))
+inflammationvips = as.data.frame(vipscores(modinf, ncomp = 3))
+angiogenesisvips = as.data.frame(vipscores(modang, ncomp = 3))
+migrationvips = as.data.frame(vipscores(modmig, ncomp = 2))
+
+col1a1_100 = rownames(fibrosisvips %>% arrange(-Col1A1) %>% head(n=100))
+col1a2_100 = rownames(fibrosisvips %>% arrange(-Col1A2) %>% head(n=100))
+col3a1_100 = rownames(fibrosisvips %>% arrange(-Col3A1) %>% head(n=100))
+vim_100 = rownames(fibrosisvips %>% arrange(-Vim.y) %>% head(n=100))
+ctgf_100 = rownames(fibrosisvips %>% arrange(-Ctgf.y) %>% head(n=100))
+il1a_100 = rownames(inflammationvips %>% arrange(-IL.1a) %>% head(n=100))
+il1b_100 = rownames(inflammationvips %>% arrange(-IL.1B) %>% head(n=100))
+il6_100 = rownames(inflammationvips %>% arrange(-IL.6) %>% head(n=100))
+total_100 = rownames(angiogenesisvips %>% arrange(-Total.Tubes) %>% head(n=100))
+length_100 = rownames(angiogenesisvips %>% arrange(-Tube.Length) %>% head(n=100))
+migration_100 = rownames(migrationvips %>% arrange(-Migration) %>% head(n=100))
+
+top100 = data.frame(Col1a1 = col1a1_100,
+                    Col1a2 = col1a2_100,
+                    Col3a1 = col3a1_100,
+                    Vim = vim_100,
+                    Ctgf = ctgf_100,
+                    Il1a = il1a_100,
+                    Il1B = il1b_100,
+                    Il6 = il6_100,
+                    Total.Tubes = total_100,
+                    Tube.Length = length_100,
+                    Migration = migration_100)
+miRcount = c()
+for (i in 1:11) {miRcount = c(miRcount, sum(grepl("hsa-",top100[,i])))}
+RNAcount = 100-miRcount 
+countsvips = data.frame(Outcome = colnames(o), miRNA = miRcount, RNA = RNAcount, num = 1:11)
+
+png("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/top100VIPs_barplot.png", res=300, width = 1200, height = 750)
+countsvips %>% pivot_longer(cols = miRNA:RNA, names_to = "Type", values_to = "Count") %>% 
+  ggplot(aes(fill = Type, y = reorder(Outcome,-num), x = Count))+
+    geom_bar(position="stack",stat = "identity") + ylab("Outcome") + xlab("Count") + ggtitle("Top 100 PLSR VIPs")+
+    theme_classic() + theme(legend.title=element_blank())
+dev.off()
+
+write.xlsx(top100, "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/top100VIPs.xlsx")
+for (i in 1:11) {
+  outcome = colnames(top100)[i]
+  list = top100[,i]
+  target = data.frame()
+  for (j in 1:100) {miR = list[j]
+    target = rbind(target, db[(db$miRNA == as.character(miR) & db$num.exps>2),1:3])} # at least 3 experiments
+  assign(paste(outcome, "_targets",sep=""),target)
+  write.xlsx(target, "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/top100VIPs.xlsx",sheetName = paste(outcome, "_targets",sep=""), append = TRUE)}
+```
+
+
+```{r}
+cutoff = 2
+migrationVIP = as.data.frame(vipscores(modmig, ncomp = 3)) %>% 
+  rownames_to_column("ID") %>% 
+  arrange(-Migration) %>% dplyr::filter(Migration>=cutoff) %>% dplyr::select(ID,Migration) %>% 
+  mutate(Category = "Migration") %>% mutate(Type = if_else(str_sub(ID,1,3) == "hsa","miRNA", "RNA"))
+colnames(migrationVIP)[2] = "avg" 
+
+angiogenesisVIP = as.data.frame(vipscores(modang, ncomp = 3)) %>% 
+  rownames_to_column("ID") %>% 
+  mutate(avg = rowMeans(cbind(Total.Tubes,Tube.Length))) %>% 
+  arrange(-avg) %>% dplyr::filter(avg>=cutoff) %>% dplyr::select(ID,avg) %>% 
+  mutate(Category = "Angiogenesis") %>% mutate(Type = if_else(str_sub(ID,1,3) == "hsa","miRNA", "RNA"))
+
+fibrosisVIP = as.data.frame(vipscores(modfib, ncomp = 3)) %>% 
+  rownames_to_column("ID") %>% 
+  mutate(avg = rowMeans(cbind(Col1A1,Col1A2,Col3A1,Vim.y,Ctgf.y))) %>% 
+  arrange(-avg) %>% dplyr::filter(avg>=cutoff) %>% dplyr::select(ID,avg) %>% 
+  mutate(Category = "Fibrosis") %>% mutate(Type = if_else(str_sub(ID,1,3) == "hsa","miRNA", "RNA"))
+
+inflammationVIP = as.data.frame(vipscores(modinf, ncomp = 3)) %>% 
+  rownames_to_column("ID") %>% 
+  mutate(avg = rowMeans(cbind(IL.1a,IL.1B,IL.6))) %>% 
+  arrange(-avg) %>% dplyr::filter(avg>=cutoff) %>% dplyr::select(ID,avg) %>% 
+  mutate(Category = "Inflammation") %>% mutate(Type = if_else(str_sub(ID,1,3) == "hsa","miRNA", "RNA"))
+
+png("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/VIPbar.png", width = 1000, height = 1000, res = 300)
+rbind(migrationVIP,angiogenesisVIP,fibrosisVIP,inflammationVIP) %>% ggplot(aes(x = Category, fill = Type))+
+  geom_bar(aes(y = (..count..)))+
+  theme_classic()+ xlab("") + ylab("VIP Count")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), text = element_text(size=12))+
+  labs(caption = paste0("VIP cutoff: ", cutoff))
+dev.off()
+
+library("ggVennDiagram")
+png("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/plots/PLSR/VIPvenn.png", width = 2000, height = 1500, res = 300)
+ggVennDiagram(list(Migration = migrationVIP$ID, Angiogenesis = angiogenesisVIP$ID, 
+                   Inflammation = inflammationVIP$ID, Fibrosis = fibrosisVIP$ID), label_alpha=0, label = "count") +
+  scale_fill_distiller(palette = "Blues", direction = 1)+
+  scale_color_manual(values = c(Migration = "yellow",Angiogenesis ="steelblue", Inflammation = 'red', Fibrosis = 'black'))+
+  labs(caption = paste0("VIP cutoff: ", cutoff))
+dev.off()
+```
+
+# Random Forest
+1. Create training data frame
+```{r}
+createtrainingdataframe = function(outcome){
+  rfdata = cbind(TrainY[,outcome],TrainX)
+  names(rfdata)[1] = names(TrainY)[outcome]
+  rfdata = prep.autoscale(rfdata, center = TRUE, scale = TRUE)
+  return(rfdata)}
+# load in full models
+load("Y:/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/RF/fullrandomforestmodels.RDS")
+```
+2. Build RF models
+```{r}
+set.seed(1)
+
+tgrid = expand.grid(
+  mtry = c(10, 50, 100, seq(250,11500,250)),
+  splitrule = c("variance", "extratrees"),
+  min.node.size = 5)
+
+rfControl = trainControl(method = "cv", number = 5, search = "grid", verboseIter = TRUE)
+###############################################################################################################################
+r1a1 = train(Col1A1 ~ .,
+           data = createtrainingdataframe(1),
+           method = "ranger",
+           tuneGrid = tgrid,
+           importance = "impurity",
+           trControl = rfControl)
+r1a2 = train(Col1A2 ~ .,
+           data = createtrainingdataframe(2),
+           method = "ranger",
+           tuneGrid = tgrid,
+           importance = "impurity",
+           trControl = rfControl)
+r3a1 = train(Col3A1 ~ .,
+           data = createtrainingdataframe(3),
+           method = "ranger",
+           tuneGrid = tgrid,
+           importance = "impurity",
+           trControl = rfControl)
+rvim = train(VIM ~ .,
+           data = createtrainingdataframe(4),
+           method = "ranger",
+           tuneGrid = tgrid,
+           importance = "impurity",
+           trControl = rfControl)
+rctgf = train(CTGF ~ .,
+           data = createtrainingdataframe(5),
+           method = "ranger",
+           tuneGrid = tgrid,
+           importance = "impurity",
+           trControl = rfControl)
+ril1a = train(IL.1a ~ .,
+           data = createtrainingdataframe(6),
+           method = "ranger",
+           tuneGrid = tgrid,
+           importance = "impurity",
+           trControl = rfControl)
+ril1b = train(IL.1B ~ .,
+           data = createtrainingdataframe(7),
+           method = "ranger",
+           tuneGrid = tgrid,
+           importance = "impurity",
+           trControl = rfControl)
+ril6 = train(IL.6 ~ .,
+           data = createtrainingdataframe(8),
+           method = "ranger",
+           tuneGrid = tgrid,
+           importance = "impurity",
+           trControl = rfControl)
+rtotal = train(Total.Tubes ~ .,
+           data = createtrainingdataframe(9),
+           method = "ranger",
+           tuneGrid = tgrid,
+           importance = "impurity",
+           trControl = rfControl)
+rlength = train(Tube.Length ~ .,
+           data = createtrainingdataframe(10),
+           method = "ranger",
+           tuneGrid = tgrid,
+           importance = "impurity",
+           trControl = rfControl)
+rmigration = train(Migration ~ .,
+           data = createtrainingdataframe(11),
+           method = "ranger",
+           tuneGrid = tgrid,
+           importance = "impurity",
+           trControl = rfControl)
+
+save(r1a1, r1a2, r3a1, rvim, rctgf, ril1a, ril1b, ril6, rlength, rtotal,rmigration, file = "Y:/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/final R code/RF/fullrandomforestmodels.RDS")
+```
+

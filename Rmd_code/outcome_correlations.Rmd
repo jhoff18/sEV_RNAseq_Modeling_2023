@@ -1,0 +1,351 @@
+---
+title: "BSoutcomes"
+author: "Jess Hoffman"
+date: "5/12/2021"
+output: html_document
+---
+```{r}
+options(digits=4)
+mainpath = "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/"
+setwd(mainpath)
+library(xlsx)
+o = read.xlsx(file=paste0(mainpath,"in vitro outcomes summary.xlsx"), sheetName="summary", row.names=TRUE)
+for (i in 5:ncol(o)) {
+  o[,i] = as.numeric(o[,i])}
+head(o)
+```
+
+```{r}
+library(tidyverse)
+library(pheatmap)
+library(viridis)
+library(RColorBrewer)
+
+annot = data.frame(Age = o[3:nrow(o),2])
+rownames(annot) = rownames(o[3:nrow(o),])
+annot$Set = c(rep("Training",28), rep("Testing",7), "Training", "Training")
+d = o[3:nrow(o),5:(ncol(o))]
+d = d[!(row.names(d) %in% c("1063","1099","2013")),]
+  
+annotc = data.frame(Assay = c(rep("Fibrotic Gene", 5), rep("Inflammatory Gene", 3), rep("Tube Formation", 2), "Migration"))
+rownames(annotc) = colnames(d)
+annotation_colors = list(Age = c(child="#5D3C91", infant="#45989B", neonate ="#EFB931"),
+                         Set = c(Training="cornflowerblue", Testing="limegreen"),
+                         #Sex = c(Female = "deeppink", Male = "forestgreen", "NA" = "grey"),
+                         Assay = c("Fibrotic Gene" = "#E39649", "Inflammatory Gene" = "#D74D3E", "Tube Formation" = "#28528E", Migration = "#5A8F58"))
+
+makeOutcomePheatmap = function(df, title){
+  pheatmap(df,
+         cluster_rows = T,
+         cluster_cols = T,
+         main = title,
+         clustering_distance_cols = "euclidean",
+         clustering_distance_rows = "euclidean",
+         show_colnames = TRUE,
+         show_rownames = TRUE,
+         clustering_method = "average",
+         #border_color = NA,
+         annotation_row = annot,
+         annotation_col = annotc,
+         annotation_colors = annotation_colors,
+         scale = "column",
+         fontsize = 12)}
+
+makeOutcomePheatmap(d, expression(paste(italic("in vitro "),"Outcomes")))
+                    
+nonchild = d[!(row.names(d) %in% c("1101","1102","1103","1104","1105","1106", "1107")),]
+makeOutcomePheatmap(nonchild, "Training Data")
+
+childtrial = d[(row.names(d) %in% c("1101","1102","1103","1104","1105","1106", "1107")),1:11]
+makeOutcomePheatmap(childtrial, "Child Trial - Testing Data")
+```
+
+```{r}
+pheatmap(as.matrix(dist(scale(t(d)),method = "euclidean")),
+         color = colorRampPalette(rev(brewer.pal(9, "Blues")))(16),
+         annotation_col = annotc,
+         annotation_row = annotc,
+         annotation_colors = annotation_colors,
+         show_rownames = T,
+         show_colnames = T)
+```
+
+Individual Outcomes
+```{r}
+library(ggpattern)
+
+plotOutcomeBar = function(df, ylabel, ctrls){
+  df$Sample = rownames(df)
+  for (i in 1:nrow(df)) {df$Age[i] = annot[rownames(annot)==df$Sample[i],1]}
+  for (i in 1:nrow(df)) {df$DataSet[i] = annot[rownames(annot)==df$Sample[i],2]}
+  neg = df[1,1]
+  pos = df[2,1]; ctr = pos
+  df = df[3:nrow(df),]
+  if (ctrls == "neg") {ctr = neg}
+  dflong = df %>% pivot_longer(cols = starts_with("Set"),
+                               names_to = "Set",
+                               values_to = "Value",
+                               values_drop_na = TRUE) %>% dplyr::select(-Average)
+  se <- function(x){sd(x)/sqrt(length(x))}
+  my_dat <- summarise(group_by(dflong, Sample),
+                    my_mean = mean(Value),
+                    my_se = se(Value))
+  for (i in 1:nrow(my_dat)) {my_dat$Age[i] = annot[rownames(annot)==my_dat$Sample[i],1]}
+  for (i in 1:nrow(my_dat)) {my_dat$DataSet[i] = annot[rownames(annot)==my_dat$Sample[i],2]}
+  ggplot(data = my_dat, aes(x = reorder(Sample, -my_mean), y = my_mean), pattern = "stripe") +
+    geom_col_pattern(aes(pattern = DataSet, fill = Age), pattern_fill="white", pattern_color="white", pattern_spacing=.025)+
+    scale_fill_manual("legend", values = c("neonate" = "#EFB931", "infant" = "#45989B", "child" = "#5D3C91"))+
+    scale_pattern_manual(values = c(Testing = "stripe", Training = "none")) +
+    geom_errorbar(data = my_dat, aes(y = my_mean, x = Sample, ymin = my_mean - my_se, ymax = my_mean + my_se), stat="identity", width=0.5) + 
+    geom_point(data = dflong, aes(y = Value, x = Sample), size = 1) +
+    geom_hline(yintercept = c(ctr), color = c("red")) +
+    theme_classic() + theme(axis.text.x = element_text(angle = 90), legend.position = "none", text = element_text(size=20)) +
+    ylab(ylabel) + xlab("CPC Patient")
+}
+
+il1a = read.xlsx(file=paste0(mainpath,"in vitro outcomes summary.xlsx"), sheetName="IL1a", row.names=TRUE)
+plotOutcomeBar(il1a, expression(paste(italic("Il-1\u03b1")," 2"^"-\u0394\u0394CT")),"pos") #700x600
+
+il1b = read.xlsx(file=paste0(mainpath,"in vitro outcomes summary.xlsx"), sheetName="IL1B", row.names=TRUE)
+plotOutcomeBar(il1b, expression(paste(italic("Il-1\u03B2")," 2"^"-\u0394\u0394CT")), "pos")
+
+il6 = read.xlsx(file=paste0(mainpath,"in vitro outcomes summary.xlsx"), sheetName="IL6", row.names=TRUE)
+plotOutcomeBar(il6, expression(paste(italic("Il-6")," 2"^"-\u0394\u0394CT")),"pos")
+
+COL1A1 = read.xlsx(file=paste0(mainpath,"in vitro outcomes summary.xlsx"), sheetName="COL1A1", row.names=TRUE)
+plotOutcomeBar(COL1A1, expression(paste(italic("Col1A1")," 2"^"-\u0394\u0394CT")),"pos")
+
+COL1A2 = read.xlsx(file=paste0(mainpath,"in vitro outcomes summary.xlsx"), sheetName="COL1A2", row.names=TRUE)
+plotOutcomeBar(COL1A2, expression(paste(italic("Col1A2")," 2"^"-\u0394\u0394CT")),"pos")
+
+COL3A1 = read.xlsx(file=paste0(mainpath,"in vitro outcomes summary.xlsx"), sheetName="COL3A1", row.names=TRUE)
+plotOutcomeBar(COL3A1, expression(paste(italic("Col3A1")," 2"^"-\u0394\u0394CT")),"pos")
+
+VIM = read.xlsx(file=paste0(mainpath,"in vitro outcomes summary.xlsx"), sheetName="VIM", row.names=TRUE)
+plotOutcomeBar(VIM, expression(paste(italic("Vim")," 2"^"-\u0394\u0394CT")),"pos")
+
+CTGF = read.xlsx(file=paste0(mainpath,"in vitro outcomes summary.xlsx"), sheetName="CTGF", row.names=TRUE)
+plotOutcomeBar(CTGF, expression(paste(italic("Ctgf")," 2"^"-\u0394\u0394CT")),"pos")
+
+TotalTube = read.xlsx(file=paste0(mainpath,"in vitro outcomes summary.xlsx"), sheetName="TotalTube", row.names=TRUE)
+TotalTube$Set11 = as.numeric(TotalTube$Set11)
+plotOutcomeBar(TotalTube, "Total # Tubes","neg")
+
+TubeLength = read.xlsx(file=paste0(mainpath,"in vitro outcomes summary.xlsx"), sheetName="TubeLength", row.names=TRUE)
+#TubeLength$Set11 = as.numeric(TubeLength$Set11)
+plotOutcomeBar(TubeLength, "Total Tube Length","neg")
+
+Migration = read.xlsx(file=paste0(mainpath,"in vitro outcomes summary.xlsx"), sheetName="Migration", row.names=TRUE)
+Migration$Set4 = as.numeric(Migration$Set4)
+plotOutcomeBar(Migration, "Migrated Cells (Fold Change)", "neg")
+```
+
+```{r}
+library(gridExtra)
+grid.arrange(plotOutcomeBar(il1a, expression(paste(italic("Il-1\u03b1")," 2"^"-\u0394\u0394CT"))), 
+             plotOutcomeBar(il1b, expression(paste(italic("Il-1\u03B2")," 2"^"-\u0394\u0394CT"))), 
+             plotOutcomeBar(il6, expression(paste(italic("Il-6")," 2"^"-\u0394\u0394CT"))), 
+             plotOutcomeBar(COL1A1, expression(paste(italic("Col1A1")," 2"^"-\u0394\u0394CT"))), 
+             plotOutcomeBar(COL1A2, expression(paste(italic("Col1A2")," 2"^"-\u0394\u0394CT"))), 
+             plotOutcomeBar(COL3A1, expression(paste(italic("Col3A1")," 2"^"-\u0394\u0394CT"))), 
+             plotOutcomeBar(VIM, expression(paste(italic("Vim")," 2"^"-\u0394\u0394CT"))), 
+             plotOutcomeBar(CTGF, expression(paste(italic("Ctgf")," 2"^"-\u0394\u0394CT"))), 
+             plotOutcomeBar(TotalTube, "Total Tube Length"),
+             nrow = 3)
+
+theplot = grid.arrange(plotOutcomeBar(il6, expression(paste(italic("Il-6")," 2"^"-\u0394\u0394CT"))), 
+             plotOutcomeBar(il1a, expression(paste(italic("Il-1\u03b1")," 2"^"-\u0394\u0394CT"))), 
+             plotOutcomeBar(CTGF, expression(paste(italic("Ctgf")," 2"^"-\u0394\u0394CT"))), 
+             plotOutcomeBar(COL1A2, expression(paste(italic("Col1A2")," 2"^"-\u0394\u0394CT"))), 
+             plotOutcomeBar(TotalTube, "Total # Tubes"),
+             plotOutcomeBar(Migration, "Migrated Cells (Fold Change)"),
+             nrow = 3)
+#ggsave(filename = paste0(mainpath,"R_outcomeplots/outomes12_21_21.png"), plot = theplot, width = 8, height = 6, units = "in", dpi = 800)
+```
+
+```{r}
+plotOutcomeCHILD = function(sheetname, color, ymax, ylabel, ctrls){
+  df = read.xlsx(file=paste0(mainpath,"in vitro outcomes summary.xlsx"), sheetName=sheetname, row.names=TRUE) %>% 
+    rownames_to_column("Patient") %>% 
+    filter(Patient %in% c("-","+","1101","1102","1103","1104","1105","1106","1107")) %>% 
+    column_to_rownames("Patient")
+  df$Sample = rownames(df)
+  for (i in 1:nrow(df)) {df$Group[i] = o[rownames(o)==df$Sample[i],2]}
+  pos = df[2,1]
+  possd = sd(df[2,2:ncol(df)],na.rm=TRUE)
+  df = df[3:nrow(df),]
+  if (sheetname == "Migration") {df$Set4 = as.numeric(df$Set4)}
+  if (sheetname == "TotalTube") {df$Set11 = as.numeric(df$Set11)}
+  dflong = df %>% pivot_longer(cols = starts_with("Set"),
+                               names_to = "Set",
+                               values_to = "Value",
+                               values_drop_na = TRUE) %>% dplyr::select(-Average)
+  ggplot() + 
+    geom_boxplot(data = dflong, aes(x=Sample, y=Value),outlier.shape = NA)+
+    geom_point(data = dflong, aes(y = Value, x = Sample), size = 1) +
+    #annotate("rect", ymin = pos-possd, ymax = pos+possd, xmin = -Inf, xmax = Inf, alpha = .1,fill = color)+
+    geom_hline(yintercept = c(pos), color = color, linetype='dotted', size=1) +
+    geom_text(aes(7.25, pos, label = "Ctrl", vjust = -1),color = color)+
+    theme_classic() + theme(axis.text.x = element_text(angle = 0)) + theme(legend.position = "none") +
+    ylab(ylabel) + xlab("CHILD Patient")+ ylim(0,ymax)+
+    theme(text = element_text(size = 15))
+}
+
+# Inflammation
+plotOutcomeCHILD("IL1a", "red", 12, expression(paste(italic("Il-1\u03b1")," 2"^"-\u0394\u0394CT")))
+plotOutcomeCHILD("IL1B", "red", 8, expression(paste(italic("Il-1\u03B2")," 2"^"-\u0394\u0394CT")))
+plotOutcomeCHILD("IL6", "red", 5, expression(paste(italic("Il-6")," 2"^"-\u0394\u0394CT")))
+
+# Fibrosis
+plotOutcomeCHILD("COL1A1", "darkorange1", 3, expression(paste(italic("Col1A1")," 2"^"-\u0394\u0394CT")))
+plotOutcomeCHILD("COL1A2", "darkorange1", 2, expression(paste(italic("Col1A2")," 2"^"-\u0394\u0394CT")))
+plotOutcomeCHILD("COL3A1", "darkorange1", 3, expression(paste(italic("Col3A1")," 2"^"-\u0394\u0394CT")))
+plotOutcomeCHILD("VIM", "darkorange1", 3, expression(paste(italic("Vim")," 2"^"-\u0394\u0394CT")))
+plotOutcomeCHILD("CTGF", "darkorange1", 4, expression(paste(italic("Ctgf")," 2"^"-\u0394\u0394CT")))
+
+# Tube Formation
+plotOutcomeCHILD("TotalTube", "blue", 6, "Total # Tubes")
+plotOutcomeCHILD("TubeLength", "blue", 4, "Tube Length")
+
+# Migration
+plotOutcomeCHILD("Migration", "chartreuse4", 4, "Migrated Cells (Fold Change)")
+```
+
+## Ranks of CHILD patients
+```{r}
+sheets = c("IL1a","IL1B","IL6","COL1A1","COL1A2","COL3A1","VIM","CTGF","TotalTube","TubeLength","Migration")
+
+grabrank = function(sheetindex){
+  name = sheets[sheetindex]
+  df = read.xlsx(file=paste0(mainpath,"in vitro outcomes summary.xlsx"), sheetName=sheets[sheetindex], row.names=TRUE) %>% 
+    rownames_to_column("Patient") %>% 
+    filter(Patient %in% c("1101","1102","1103","1104","1105","1106","1107")) %>% 
+    column_to_rownames("Patient") %>% 
+    select("Average") %>% 
+    mutate( !!paste0(name,"_rank") := dense_rank(desc(Average))) %>% 
+    rename( !!name := "Average")
+  return(df)
+}
+
+grabrankanti = function(sheetindex){
+  name = sheets[sheetindex]
+  df = read.xlsx(file=paste0(mainpath,"in vitro outcomes summary.xlsx"), sheetName=sheets[sheetindex], row.names=TRUE) %>% 
+    rownames_to_column("Patient") %>% 
+    filter(Patient %in% c("1101","1102","1103","1104","1105","1106","1107")) %>% 
+    column_to_rownames("Patient") %>% 
+    select("Average") %>% 
+    mutate( !!paste0(name,"_rank") := dense_rank(Average)) %>% 
+    rename( !!name := "Average")
+  return(df)
+}
+
+#combine ranks
+combo = grabrankanti(1)
+for (i in 2:8) {combo = cbind(combo, grabrankanti(i))} 
+for (i in 9:11) {combo = cbind(combo, grabrank(i))}
+combo = combo %>% select(contains("_rank")) %>% rename_with(~str_remove(., '_rank'))
+
+annotcrank = data.frame(Assay = c(rep("Inflammatory Gene", 3), rep("Fibrotic Gene", 5), rep("Tube Formation", 2), "Migration"))
+rownames(annotcrank) = colnames(combo)
+annotation_colors = list(Assay = c("Fibrotic Gene" = "#E39649", "Inflammatory Gene" = "#D74D3E", "Tube Formation" = "#28528E", Migration = "#5A8F58"))
+
+makeOutcomePheatmap = function(df, title){
+  pheatmap(df,
+         cluster_rows = T,
+         cluster_cols = T,
+         main = title,
+         clustering_distance_cols = "euclidean",
+         clustering_distance_rows = "euclidean",
+         show_colnames = TRUE,
+         show_rownames = TRUE,
+         clustering_method = "average",
+         #border_color = NA,
+         annotation_row = annot,
+         annotation_col = annotc,
+         annotation_colors = annotation_colors,
+         scale = "column",
+         fontsize = 12)}
+
+pheatmap(combo,
+         display_numbers = as.matrix(combo),
+         color = rev(RColorBrewer::brewer.pal(9, "Blues")),
+         labels_row=paste0(rownames(combo), " | ",round(rowMeans(combo),1)),
+         cluster_cols = FALSE,
+         annotation_col = annotcrank,
+         annotation_colors = annotation_colors)
+
+rowMeans(combo)
+```
+Relate in vitro scores to clinical
+```{r}
+clinical = read.xlsx(paste0(mainpath,"/0. BigSeq II/clinicalranks.xlsx"), sheetName = "clinicalrank")
+for (i in 4:ncol(clinical)) {clinical[,i] = as.numeric(clinical[,i])}
+
+clinical_rescale = clinical %>% select(c(acrostic, JessID, ends_with("_rank"))) %>% slice_tail(n = 5) 
+clinicaltidy_rescale = clinical_rescale %>% pivot_longer(cols = ends_with("_rank")) %>% 
+  separate(col = name, into = c("Measurement", "Time", "Rank")) %>% select(!Rank)
+clinicaloriginal = clinical %>% select(c(acrostic, JessID, !c(ends_with("_rank"),pat_id))) %>% slice_tail(n = 5)
+clinicaltidyoriginal = clinicaloriginal %>% pivot_longer(cols = !c(acrostic, JessID)) %>% 
+  separate(col = name, into = c("Measurement", "Time")) %>% mutate(Measurement = toupper(Measurement))
+
+invitorrankstocompare = combo[c(2,1,3,6,7),] %>% rownames_to_column("JessID") %>% mutate(JessID = as.numeric(JessID))
+
+rescaled_joined = full_join(invitorrankstocompare,clinical_rescale) %>% column_to_rownames("JessID") %>% select(!acrostic)
+head(rescaled_joined)
+```
+
+```{r}
+library(corrr)
+
+#Baseline
+png(paste0(mainpath,"/0. BigSeq II/clinical/baselinecorrplot.png"), width = 1500, height = 1500, res = 300)
+colnames(rescaled_joined)[12:15] = str_extract(names(rescaled_joined[,12:15]),"[^_]+")
+rescaled_joined[,1:15] %>% correlate(method = "spearman", use = "pairwise.complete.obs", diagonal = 0) %>% shave() %>% 
+  rplot(shape = 15) + ggtitle("Baseline Measurements") + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+# na.or.complete, complete.obs
+dev.off()
+
+png(paste0(mainpath,"/0. BigSeq II/clinical/baselinenetwork.png"), width = 1500, height = 1500, res = 300)
+rescaled_joined[,1:15] %>% correlate(method = "pearson", use = "pairwise.complete.obs", diagonal = 1) %>% 
+  network_plot() + ggtitle("Baseline Measurements") + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), text = element_text(size=10))
+dev.off()
+
+# 6mo.
+png(paste0(mainpath,"/0. BigSeq II/clinical/6mocorrplot.png"), width = 1500, height = 1500, res = 300)
+colnames(rescaled_joined)[16:19] = str_extract(names(rescaled_joined[,16:19]),"[^_]+")
+rescaled_joined[,c(1:11,16:19)] %>% correlate(method = "spearman", use = "pairwise.complete.obs", diagonal = 0) %>% shave() %>% 
+  rplot(shape = 15) + ggtitle("6 months Measurements") + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+dev.off()
+
+png(paste0(mainpath,"/0. BigSeq II/clinical/6monetwork.png"), width = 1500, height = 1500, res = 300)
+rescaled_joined[,c(1:11,16:19)] %>% correlate(method = "pearson", use = "pairwise.complete.obs", diagonal = 1) %>% 
+  network_plot() + ggtitle("6 months Measurements") + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), text = element_text(size=10))
+dev.off()
+
+#12mo.
+png(paste0(mainpath,"/0. BigSeq II/clinical/12mocorrplot.png"), width = 1500, height = 1500, res = 300)
+colnames(rescaled_joined)[20:23] = str_extract(names(rescaled_joined[,20:23]),"[^_]+")
+rescaled_joined[,c(1:11,20:23)] %>% correlate(method = "spearman", use = "pairwise.complete.obs", diagonal = 0) %>% shave() %>% 
+  rplot(shape = 15) + ggtitle("12 months Measurements") + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+dev.off()
+```
+
+
+```{r}
+scores = read.xlsx(file=paste0(mainpath,"in vitro outcomes summary.xlsx"), sheetName="Score", row.names=TRUE)
+for (i in 5:ncol(scores)) {scores[,i] = as.numeric(scores[,i])}
+scores = scores[!(row.names(scores) %in% c("1063","1099","2013")),]
+annotation_colors2 = list(Group = c(child="#5D3C91", infant="#45989B", neonate ="#EFB931"),
+                         Sex = c(Female = "lightcoral", Male = "royalblue4", "NA" = "grey"))
+
+pheatmap(scores[,5:8],
+         annotation_row = scores[,1:2],
+         annotation_colors = annotation_colors2,
+         border_color = NA)
+```
+

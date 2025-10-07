@@ -1,0 +1,525 @@
+---
+title: "Random Forest BSII"
+author: "Jess Hoffman"
+date: '2022-05-02'
+output: html_document
+---
+
+```{r message=FALSE, warning=FALSE}
+options(digits = 3)
+library(tidyverse)
+library(mdatools)
+library(xlsx)
+library(randomForest)
+library(caret)
+library(ranger)
+library(vip)
+library(gridExtra)
+```
+
+## Import Data
+```{r}
+miR_EV = read.csv("Y:/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/miRNA_filtered_batchcorrected_logCPM_EV.csv") %>% 
+  column_to_rownames("X")
+total_EV = read.csv("Y:/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/TotalRNA_filtered_batchcorrected_logFPKM_EV.csv") %>% 
+  column_to_rownames("X")
+data.frame(rbind(dim(miR_EV), dim(total_EV))) %>% `colnames<-`(c("Features","Samples")) %>% `rownames<-`(c("miR_EV","total_EV"))
+
+combo = rbind(miR_EV,total_EV)
+
+o = as.data.frame(read.xlsx(file = "Y:/davis-lab/Jess Hoffman/11. Big Seq/in vitro outcomes summary.xlsx", 
+              sheetName="summary", row.names=TRUE))
+for (i in 5:ncol(o)) {o[,i] = as.numeric(o[,i])}; o$ID = rownames(o)
+head(o)
+
+names(miR_EV) = str_sub(names(miR_EV), 2,-1)
+miR_EV = as.data.frame(t(miR_EV)); miR_EV$ID = rownames(miR_EV)
+df = left_join(as.data.frame(o),miR_EV) %>% column_to_rownames("ID")
+
+o2=o; names(o2)[8:9] = c("Vim.y","Ctgf.y")
+names(combo) = str_sub(names(combo), 2,-1)
+combo = as.data.frame(t(combo)); combo$ID = rownames(combo)
+dfcombo = left_join(as.data.frame(o2),combo) %>% column_to_rownames("ID")
+datacombo = dfcombo[3:nrow(dfcombo),5:ncol(dfcombo)]; dim(datacombo)
+
+#patient info
+pat_info = df[3:nrow(df),1:4]
+data = df[3:nrow(df),5:ncol(df)]; dim(data)
+```
+
+## Munge Data
+Train model - 26 training set, 7 testing set
+```{r}
+Train0 = data[c(1:28,36,37),]
+Train = Train0[c(1:18, 20, 22:26, 28, 30),] #19 = 1048, 21 = 1063, 27 = 1099, 29 = 2013
+TrainY = Train[,1:11]
+TrainX = Train[,12:ncol(Train)]
+#Train2 = data.frame(Y = I(as.matrix(TrainY)), X = I(as.matrix(TrainX)))
+
+Test = data[29:35,12:ncol(data)]
+TestY = data[29:35,1:11]
+#Test2 = data.frame(Y = I(as.matrix(Test[,1:11])), X = I(as.matrix(Test[,12:ncol(Test)])))
+
+# TotalRNA
+Train0combo = datacombo[c(1:28,36,37),]
+Traincombo = Train0combo[c(1:18, 20, 22:26, 28, 30),] #19 = 1048, 21 = 1063, 27 = 1099, 29 = 2013
+TrainYcombo = Traincombo[,1:11]
+TrainXcombo = Traincombo[,12:(ncol(Traincombo)-2)]
+
+Testcombo = datacombo[29:35,12:(ncol(Traincombo)-2)]
+TestYcombo = datacombo[29:35,1:11]
+
+#Outcomes
+par(mfrow=(c(2,2)))
+boxplot(prep.autoscale(TrainY, center = FALSE, scale = FALSE),las = 2, main = "Training Data")
+boxplot(prep.autoscale(TrainY, center = TRUE, scale = TRUE), las = 2, main = "Training Data - Scaled & Centered") #700x500
+boxplot(prep.autoscale(TestY, center = FALSE, scale = FALSE),las = 2, main = "Testing Data, CHILD")
+boxplot(prep.autoscale(TestY, center = TRUE, scale = TRUE), las = 2, main = "Testing Data, CHILD - Scaled & Centered") #700x500
+#dev.off()
+```
+
+# Random Forest
+```{r}
+load("Y:/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/rangerrfR/fullrandomforestmodels.RDS")
+plot(varImp(r3a1), top = 30)
+```
+
+## Train Data
+```{r}
+createtrainingdataframe = function(outcome){
+  rfdata = cbind(TrainY[,outcome],TrainXcombo)
+  names(rfdata)[1] = names(TrainY)[outcome]
+  rfdata = prep.autoscale(rfdata, center = TRUE, scale = TRUE)
+  return(rfdata)}
+```
+
+
+```{r eval=FALSE, include=FALSE}
+set.seed(1)
+
+tgrid = expand.grid(
+  mtry = c(10, 50, 100, seq(250,11500,250)),
+  splitrule = c("variance", "extratrees"),
+  min.node.size = 5)
+
+rfControl = trainControl(method = "cv", number = 5, search = "grid", verboseIter = TRUE)
+################################################################################################################################
+r1a1 = train(Col1A1 ~ .,
+           data = createtrainingdataframe(1),
+           method = "ranger",
+           tuneGrid = tgrid,
+           importance = "impurity",
+           trControl = rfControl)
+r1a2 = train(Col1A2 ~ .,
+           data = createtrainingdataframe(2),
+           method = "ranger",
+           tuneGrid = tgrid,
+           importance = "impurity",
+           trControl = rfControl)
+r3a1 = train(Col3A1 ~ .,
+           data = createtrainingdataframe(3),
+           method = "ranger",
+           tuneGrid = tgrid,
+           importance = "impurity",
+           trControl = rfControl)
+rvim = train(VIM ~ .,
+           data = createtrainingdataframe(4),
+           method = "ranger",
+           tuneGrid = tgrid,
+           importance = "impurity",
+           trControl = rfControl)
+rctgf = train(CTGF ~ .,
+           data = createtrainingdataframe(5),
+           method = "ranger",
+           tuneGrid = tgrid,
+           importance = "impurity",
+           trControl = rfControl)
+ril1a = train(IL.1a ~ .,
+           data = createtrainingdataframe(6),
+           method = "ranger",
+           tuneGrid = tgrid,
+           importance = "impurity",
+           trControl = rfControl)
+ril1b = train(IL.1B ~ .,
+           data = createtrainingdataframe(7),
+           method = "ranger",
+           tuneGrid = tgrid,
+           importance = "impurity",
+           trControl = rfControl)
+ril6 = train(IL.6 ~ .,
+           data = createtrainingdataframe(8),
+           method = "ranger",
+           tuneGrid = tgrid,
+           importance = "impurity",
+           trControl = rfControl)
+rtotal = train(Total.Tubes ~ .,
+           data = createtrainingdataframe(9),
+           method = "ranger",
+           tuneGrid = tgrid,
+           importance = "impurity",
+           trControl = rfControl)
+rlength = train(Tube.Length ~ .,
+           data = createtrainingdataframe(10),
+           method = "ranger",
+           tuneGrid = tgrid,
+           importance = "impurity",
+           trControl = rfControl)
+rmigration = train(Migration ~ .,
+           data = createtrainingdataframe(11),
+           method = "ranger",
+           tuneGrid = tgrid,
+           importance = "impurity",
+           trControl = rfControl)
+
+#save(r1a1, r1a2, r3a1, rvim, rctgf, ril1a, ril1b, ril6, rlength, rtotal,rmigration, file = "Y:/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/rangerrfR/fullrandomforestmodels.RDS")
+```
+
+
+## Plot RF best params
+```{r}
+plotparamsrf = function(model, name){
+  ggplot(model, plotType = "level") + scale_fill_distiller(palette = "Spectral") + theme_classic() +
+    ggtitle(name) + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), text = element_text(size=12))}
+plotparamsrf(r1a1, "Col1a1")
+plotparamsrf(r1a2,"Col1a2")
+plotparamsrf(r3a1,"Col3a1")
+plotparamsrf(rvim, "Vim")
+plotparamsrf(rctgf, "Ctgf")
+plotparamsrf(ril1a, "il-1a")
+plotparamsrf(ril1b, "il-1B")
+plotparamsrf(ril6, "il-6")
+plotparamsrf(rlength, "Tube Length")
+plotparamsrf(rtotal, "Total Tubes")
+plotparamsrf(rmigration, "Migration")
+```
+
+## plot RF VIP
+```{r}
+library(vip)
+listofmodels = c(r1a1, r1a2, r3a1, rvim, rctgf, ril1a, ril1b, ril6, rlength, rtotal, rmigration)
+
+plotvip = function(model,outcome,color){
+  vip(model, num_features = 15, geom = "point") + 
+    theme_classic()+
+    geom_point(color = color)+
+    ggtitle(outcome)}
+
+grid.arrange(
+  plotvip(r1a1, "Col1a1", "#E39649"),
+  plotvip(r1a2, "Col1a2", "#E39649"),
+  plotvip(r3a1, "Col3a1", "#E39649"),
+  plotvip(rvim, "Vim", "#E39649"),
+  plotvip(rctgf, "Ctgf", "#E39649"),
+  plotvip(ril1a, "Il-1a", "#D74D3E"),
+  plotvip(ril1b, "Il-1B", "#D74D3E"),
+  plotvip(ril6, "Il-6", "#D74D3E"),
+  plotvip(rmigration, "Migration", "#5A8F59"),
+  plotvip(rtotal, "Total Tubes", "#28528E"),
+  plotvip(rlength, "Tube Length", "#28528E"),
+  ncol = 4)
+
+library(xlsx)
+
+#write.xlsx(data.frame(vi(r1a1)[1:100,1], vi(r1a2)[1:100,1], vi(r3a1)[1:100,1], vi(rvim)[1:100,1], vi(rctgf)[1:100,1], vi(ril1a)[1:100,1],vi(ril1b)[1:100,1],vi(ril6)[1:100,1], vi(rmigration)[1:100,1],vi(rtotal)[1:100,1],vi(rlength)[1:100,1]), file = "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/rangerrfR/VIPsRF.xlsx", sheetName = "Col1a1", append = TRUE)
+```
+
+## Prediction plot full RF model
+```{r}
+scaledtestY = as.data.frame(prep.autoscale(TestYcombo, scale = TRUE, center = TRUE))
+scaledtestX = as.data.frame(prep.autoscale(Testcombo, center = TRUE, scale = TRUE))
+
+library(ggpubr)
+makepredictplot = function(model, column, title, color){
+  pl = data.frame(Predicted = predict(model, scaledtestX), Observed = scaledtestY[,column])
+  ggplot(pl, aes(x = Observed, y = Predicted, fill = color)) + theme_classic() + 
+    geom_smooth(method = lm, se = FALSE, color = color, alpha = 0.25, linetype = "dashed", size=0.75) + 
+    stat_regline_equation(label.y = 0.48, aes(label = ..eq.label..), size = 4) +
+    stat_regline_equation(label.y = 0.4, aes(label = ..rr.label..), size = 4) + 
+    geom_point(color = "black", size = 1) + 
+    ggtitle(title)+ theme(legend.position="none", plot.title = element_text(hjust = 0.5), text = element_text(size=12))}
+
+#png(filename = "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/rangerrfR/obsvspred_refined.png", width = 3000, height = 2600, res = 300)
+grid.arrange(makepredictplot(r1a1, 1, "Col1a1", "#E39649"),
+             makepredictplot(r1a2, 2, "Col1a2", "#E39649"),
+            makepredictplot(r3a1, 3, "Col3a1", "#E39649"),
+            makepredictplot(rvim, 4, "Vim", "#E39649"),
+            makepredictplot(rctgf, 5, "Ctgf", "#E39649"),
+            makepredictplot(ril1a, 6, "Il-1\u03b1", "#D74D3E"),
+            makepredictplot(ril1b, 7, "Il-1\u03b2", "#D74D3E"),
+            makepredictplot(ril6, 8, "Il-6", "#D74D3E"),
+            makepredictplot(rmigration, 9, "Migration", "#5A8F59"),
+            makepredictplot(rtotal, 10, "Total Tubes", "#28528E"),
+            makepredictplot(rlength, 11, "Tube Length", "#28528E"),
+             ncol = 4)
+#dev.off()
+```
+
+## Overlap VIPs with PLSR
+```{r}
+cutoffVIP = 100
+fib = c(as.vector(vi(r1a1)[1:cutoffVIP,1])$Variable, as.vector(vi(r1a2)[1:cutoffVIP,1])$Variable, as.vector(vi(r3a1)[1:cutoffVIP,1])$Variable, 
+        as.vector(vi(rvim)[1:cutoffVIP,1])$Variable, as.vector(vi(rctgf)[1:cutoffVIP,1])$Variable)
+inf = c(as.vector(vi(ril1a)[1:cutoffVIP,1])$Variable, as.vector(vi(ril1b)[1:cutoffVIP,1])$Variable, as.vector(vi(ril6)[1:cutoffVIP,1])$Variable)
+ang = c(as.vector(vi(rtotal)[1:cutoffVIP,1])$Variable, as.vector(vi(rlength)[1:cutoffVIP,1])$Variable)
+mig = as.vector(vi(rmigration)[1:cutoffVIP,1])$Variable
+plsrvips = read.xlsx(file = "Y:/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/mdaR_PLSR/VIPmodels/VIPscores.xlsx", sheetName = "VIPs")
+
+library(ggVennDiagram)
+#png(filename = "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/rangerrfR/VIPVenn_RFandPLSR.png", width = 2400, height = 2400, res = 300)
+grid.arrange(ggVennDiagram(list(RandomForest = ifelse(grepl("hsa",mig,fixed = FALSE),str_sub(mig,2,-2),mig), 
+                                PLSR = plsrvips$Migration), edge_size = 0.1, label_alpha=0, label = "count") +
+               scale_fill_distiller(palette = "Greens", direction = 1) + ggtitle("Migration") + theme(legend.position="none"),
+             ggVennDiagram(list(RandomForest = ifelse(grepl("hsa",ang,fixed = FALSE),str_sub(ang,2,-2),ang), 
+                                PLSR = plsrvips$Angiogenesis), edge_size = 0.1, label_alpha=0, label = "count") +
+               scale_fill_distiller(palette = "Blues", direction = 1) + ggtitle("Angiogenesis") + theme(legend.position="none"),
+             ggVennDiagram(list(RandomForest = ifelse(grepl("hsa",inf,fixed = FALSE),str_sub(inf,2,-2),inf), 
+                                PLSR = plsrvips$Inflammation), edge_size = 0.1, label_alpha=0, label = "count") +
+               scale_fill_distiller(palette = "Reds", direction = 1) + ggtitle("Inflammation") + theme(legend.position="none"),
+             ggVennDiagram(list(RandomForest = ifelse(grepl("hsa",fib,fixed = FALSE),str_sub(fib,2,-2),fib), 
+                                PLSR = plsrvips$Fibrosis), edge_size = 0.1, label_alpha=0, label = "count") +
+               scale_fill_distiller(palette = "Oranges", direction = 1) + ggtitle("Fibrosis") + theme(legend.position="none"),
+             nrow = 2)
+#dev.off()
+
+migoverlap = intersect(ifelse(grepl("hsa",mig,fixed = FALSE),str_sub(mig,2,-2),mig), plsrvips$Migration)
+fiboverlap = intersect(ifelse(grepl("hsa",fib,fixed = FALSE),str_sub(fib,2,-2),fib), plsrvips$Fibrosis)
+infoverlap = intersect(ifelse(grepl("hsa",inf,fixed = FALSE),str_sub(inf,2,-2),inf), plsrvips$Inflammation)
+angoverlap = intersect(ifelse(grepl("hsa",ang,fixed = FALSE),str_sub(ang,2,-2),ang), plsrvips$Angiogenesis)
+```
+
+
+## write overlap RF and PLSR VIP
+```{r eval=FALSE, include=FALSE}
+for (i in 1:length(angoverlap)) {
+  write.xlsx(data.frame(angoverlap),file = "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/rangerrfR/overlapRFandPLSR.xlsx", 
+              sheetName = "Ang", append = TRUE)
+  target = data.frame()
+  for (j in 1:length(angoverlap)) {miR = angoverlap[j]
+                          newtarget = db[(db$miRNA == as.character(miR) & db$num.exps>=1),1:3]
+                          target = rbind(target, newtarget)}
+  write.xlsx(target,file = "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/rangerrfR/overlapRFandPLSR.xlsx", 
+           sheetName = paste0("Ang","target"), append = TRUE)}
+```
+
+## RF: Feature select and reduce
+```{r}
+plot(varImp(r3a1), top = 30)
+
+createtrainingdataframe_reduced = function(outcome, model, cutoff){
+  select = vi(model)[vi(model)$Importance>cutoff,]
+  X = TrainXcombo %>% select_(.dots = select$Variable)
+  rfdata = cbind(TrainY[,outcome],X)
+  names(rfdata)[1] = names(TrainY)[outcome]
+  rfdata = prep.autoscale(rfdata, center = TRUE, scale = TRUE)
+  return(rfdata)}
+
+makereducedRFmodel = function(ogmodel,outcome,cutoff){
+  set.seed(1)
+  select = vi(ogmodel)[vi(ogmodel)$Importance>cutoff,]
+  X = TrainXcombo %>% select_(.dots = select$Variable)
+  rfdata = cbind(TrainY[,outcome],X)
+  names(rfdata)[1] = "y"
+  rfdata = prep.autoscale(rfdata, center = TRUE, scale = TRUE)
+  rfControl = trainControl(method = "cv", number = 5, search = "grid", verboseIter = TRUE)
+  model = train(y ~ .,
+           data = rfdata,
+           method = "ranger",
+           tuneGrid = expand.grid(mtry = seq(2,(dim(rfdata)[2]-1),round(dim(rfdata)[2]/20,0)), splitrule = c("variance", "extratrees"), min.node.size = 5),
+           importance = "impurity",
+           trControl = rfControl)
+  return(model)
+}
+
+cutoff = 10
+r1a1_reduced = makereducedRFmodel(r1a1,1,cutoff)
+r1a2_reduced = makereducedRFmodel(r1a2,2,cutoff)
+r3a1_reduced = makereducedRFmodel(r3a1,3,cutoff)
+rvim_reduced = makereducedRFmodel(rvim,4,cutoff)
+rctgf_reduced = makereducedRFmodel(rctgf,5,cutoff)
+ril1a_reduced = makereducedRFmodel(ril1a,6,cutoff)
+ril1b_reduced = makereducedRFmodel(ril1b,7,cutoff)
+ril6_reduced = makereducedRFmodel(ril6,8,cutoff)
+rtotal_reduced = makereducedRFmodel(rtotal,9,cutoff)
+rlength_reduced = makereducedRFmodel(rlength,10,cutoff)
+rmigration_reduced = makereducedRFmodel(rmigration,11,cutoff)
+
+plotparamsrf(ril6_reduced, "Il-6")
+makepredictplot(ril6_reduced, 8, "Il-6", "#D74D3E")
+
+#png(filename = "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/rangerrfR/obsvspred_reducedmodels_cutoff20.png", width = 3000, height = 2600, res = 300)
+grid.arrange(makepredictplot(r1a1_reduced, 1, "Col1a1", "#E39649"),
+             makepredictplot(r1a2_reduced, 2, "Col1a2", "#E39649"),
+            makepredictplot(r3a1_reduced, 3, "Col3a1", "#E39649"),
+            makepredictplot(rvim_reduced, 4, "Vim", "#E39649"),
+            makepredictplot(rctgf_reduced, 5, "Ctgf", "#E39649"),
+            makepredictplot(ril1a_reduced, 6, "Il-1\u03b1", "#D74D3E"),
+            makepredictplot(ril1b_reduced, 7, "Il-1\u03b2", "#D74D3E"),
+            makepredictplot(ril6_reduced, 8, "Il-6", "#D74D3E"),
+            makepredictplot(rmigration_reduced, 9, "Migration", "#5A8F59"),
+            makepredictplot(rtotal_reduced, 10, "Total Tubes", "#28528E"),
+            makepredictplot(rlength_reduced, 11, "Tube Length", "#28528E"),
+             ncol = 4)
+#dev.off()
+```
+
+# Ridge/Lasso/Elastic Net
+
+## Ridge
+```{r}
+load("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/Regularized Regression/Ridge/fullridgemodels.RDS")
+resultsridge
+#write.csv(resultsridge,"Y:/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/Regularized Regression/Ridge/ridge_fullmodelresults.csv")
+```
+
+
+```{r eval=FALSE, include=FALSE}
+lambda = 10^seq(-3, 2.7, length = 100)
+set.seed(1)
+ridge1a1 = train(Col1A1 ~., data = createtrainingdataframe(1), method = "glmnet",
+               trControl = trainControl("cv", number = 5), metric = "Rsquared",
+               tuneGrid = expand.grid(alpha = 0, lambda = lambda))
+coef(ridge1a1$finalModel, ridge1a1$bestTune$lambda) # Model coefficients
+predictions = ridge1a1 %>% predict(scaledtestX) # Make predictions
+data.frame(RMSE = RMSE(predictions, scaledtestY[,1]), Rsquare = R2(predictions, scaledtestY[,1])) # Model prediction performance
+
+############################################################################################################################
+trainridge = function(outcomeindex){
+  lambda = 10^seq(-3, 2.7, length = 100)
+  set.seed(1)
+  df = createtrainingdataframe(outcomeindex)
+  outcome = colnames(df)[1]
+  colnames(df)[1] = "Outcome"
+  model = train(Outcome ~., data = df, method = "glmnet",
+               trControl = trainControl("cv", number = 5), metric = "Rsquared",
+               tuneGrid = expand.grid(alpha = 0, lambda = lambda))
+  return(model)}
+
+ridgecoeff = function(model){
+  a = coef(model$finalModel, model$bestTune$lambda)
+  coeff = data.frame(RNA = a@Dimnames[[1]], coeff = a@x) %>% arrange(-coeff)
+  return(coeff)
+}
+
+predictionsridge = function(model){
+  predictions = model %>% predict(scaledtestX)
+  #plot(scaledtestY[,index],predictions)
+  return(predictions)
+}
+############################################################################################################################
+resultsridge = data.frame()
+for (i in 1:11) {
+  model = trainridge(i)
+  assign(paste0("ridge_model_",colnames(TrainY)[i]), model)
+  predictions = predictionsridge(model)
+  resultsridge = rbind(resultsridge, 
+                       data.frame(Outcome = colnames(TrainY)[i], lambda = model$bestTune[[2]], 
+                                  RMSE = RMSE(predictions, scaledtestY[,i]), Rsquare = R2(predictions, scaledtestY[,i])))}
+resultsridge
+#save(ridge_model_Col1A1, ridge_model_Col1A2, ridge_model_Col3A1, ridge_model_VIM, ridge_model_CTGF, ridge_model_IL.1a, ridge_model_IL.1B, ridge_model_IL.6, ridge_model_Total.Tubes, ridge_model_Tube.Length, ridge_model_Migration, resultsridge, file = "/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/Regularized Regression/Ridge/fullridgemodels.RDS")
+```
+
+```{r}
+load("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/Regularized Regression/Lasso/fulllassomodels.RDS")
+resultslasso
+#write.csv(resultslasso,"Y:/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/Regularized Regression/Lasso/lasso_fullmodelresults.csv")
+```
+
+
+## Lasso
+```{r}
+trainlasso = function(outcomeindex){
+  lambda = 10^seq(-3, 2.7, length = 100)
+  set.seed(1)
+  df = createtrainingdataframe(outcomeindex)
+  outcome = colnames(df)[1]
+  colnames(df)[1] = "Outcome"
+  model = train(Outcome ~., data = df, method = "glmnet",
+               trControl = trainControl("cv", number = 5), metric = "Rsquared",
+               tuneGrid = expand.grid(alpha = 1, lambda = lambda))
+  return(model)}
+
+lassocoeff = function(model){
+  a = coef(model$finalModel, model$bestTune$lambda)
+  coeff = data.frame(RNA = a@Dimnames[[1]], coeff = a@x) %>% arrange(-coeff)
+  return(coeff)
+}
+
+predictionslasso = function(model){
+  predictions = model %>% predict(scaledtestX)
+  #plot(scaledtestY[,index],predictions)
+  return(predictions)
+}
+############################################################################################################################
+resultslasso = data.frame()
+for (i in 1:11) {
+  model = trainlasso(i)
+  assign(paste0("lasso_model_",colnames(TrainY)[i]), model)
+  predictions = predictionslasso(model)
+  resultslasso = rbind(resultslasso, 
+                       data.frame(Outcome = colnames(TrainY)[i],  lambda = model$bestTune[[2]],
+                                  RMSE = RMSE(predictions, scaledtestY[,i]), Rsquare = R2(predictions, scaledtestY[,i])))}
+resultslasso
+
+#save(lasso_model_Col1A1, lasso_model_Col1A2, lasso_model_Col3A1, lasso_model_VIM, lasso_model_CTGF, lasso_model_IL.1a, lasso_model_IL.1B, lasso_model_IL.6, lasso_model_Total.Tubes, lasso_model_Tube.Length, lasso_model_Migration, resultslasso, file = "Y:/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/Regularized Regression/Lasso/fulllassomodels.RDS")
+```
+
+## Elastic Net
+```{r}
+load("Y:/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/Regularized Regression/Lasso/fullnetmodels.RDS")
+resultsnet
+#write.csv(resultsnet,"Y:/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/Regularized Regression/Net/net_fullmodelresults.csv")
+```
+
+
+```{r}
+trainnet = function(outcomeindex){
+  lambda = 10^seq(-3, 2.7, length = 100)
+  set.seed(1)
+  df = createtrainingdataframe(outcomeindex)
+  outcome = colnames(df)[1]
+  colnames(df)[1] = "Outcome"
+  model = train(Outcome ~., data = df, method = "glmnet",
+               trControl = trainControl("cv", number = 5), metric = "Rsquared",
+               tuneLength = 10)
+  return(model)}
+
+netcoeff = function(model){
+  a = coef(model$finalModel, model$bestTune$lambda)
+  coeff = data.frame(RNA = a@Dimnames[[1]], coeff = a@x) %>% arrange(-coeff)
+  return(coeff)
+}
+
+predictionsnet = function(model){
+  predictions = model %>% predict(scaledtestX)
+  #plot(scaledtestY[,index],predictions)
+  return(predictions)
+}
+############################################################################################################################
+resultsnet = data.frame()
+for (i in 1:11) {
+  model = trainnet(i)
+  assign(paste0("net_model_",colnames(TrainY)[i]), model)
+  predictions = predictionsnet(model)
+  resultsnet = rbind(resultsnet, 
+                       data.frame(Outcome = colnames(TrainY)[i], alpha = model$bestTune[[1]], lambda = model$bestTune[[2]],
+                                  RMSE = RMSE(predictions, scaledtestY[,i]), Rsquare = R2(predictions, scaledtestY[,i])))}
+resultsnet
+
+#save(net_model_Col1A1, net_model_Col1A2, net_model_Col3A1, net_model_CTGF, net_model_VIM, net_model_IL.1a, net_model_IL.1B, net_model_IL.6, net_model_Total.Tubes, net_model_Tube.Length, net_model_Migration, resultsnet, file = "Y:/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/Regularized Regression/Net/fullnetmodels.RDS")
+```
+
+Compare models
+```{r}
+for (i in 1:length(colnames(TrainY))) {
+  ridgemodels = c(ridge_model_Col1A1, ridge_model_Col1A2, ridge_model_Col3A1, ridge_model_VIM, ridge_model_CTGF, 
+                  ridge_model_IL.1a, ridge_model_IL.1B, ridge_model_IL.6, ridge_model_Total.Tubes, ridge_model_Tube.Length, ridge_model_Migration)
+  lassomodels = c(lasso_model_Col1A1, lasso_model_Col1A2, lasso_model_Col3A1, lasso_model_VIM, lasso_model_CTGF, 
+                  lasso_model_IL.1a, lasso_model_IL.1B, lasso_model_IL.6, lasso_model_Total.Tubes, lasso_model_Tube.Length, lasso_model_Migration)
+  elasticmodels = c(net_model_Col1A1, net_model_Col1A2, net_model_Col3A1, net_model_VIM, net_model_CTGF, 
+                    net_model_IL.1a, net_model_IL.1B, net_model_IL.6, net_model_Total.Tubes, net_model_Tube.Length, net_model_Migration)
+  png(filename = paste0("/Volumes/davis-lab/Jess Hoffman/11. Big Seq/0. BigSeq II/Regularized Regression/trainingmetrics_",colnames(TrainY)[i],".png"), 
+      width = 3000, height = 2600, res = 300)
+  bwplot(resamples(list(ridge = ridgemodels[i],lasso = lassomodels[i],elastic = elasticmodels[i])))
+  dev.off()}
+```
+
